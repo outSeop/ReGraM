@@ -1,3 +1,11 @@
+"""Run UniVAD clean evaluation and save a structured summary.
+
+Role:
+- UniVAD clean-eval runner
+- input: prepared UniVAD dataset root
+- output: summary json plus underlying UniVAD log
+"""
+
 from __future__ import annotations
 
 import argparse

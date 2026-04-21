@@ -1,3 +1,17 @@
+"""Run PatchCore condition-shift evaluation from a manifest.
+
+Role:
+- main PatchCore runner for shifted-normal validation
+- input: manifest jsonl, category, raw LOCO dataset root
+- output: summary json and log for notebook/report consumption
+
+Typical flow:
+1. fit PatchCore on train/good
+2. score clean good and anomaly sets
+3. score manifest-defined shifted normal samples
+4. write structured summary for the viewer/report layer
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -13,9 +27,10 @@ from torchvision import transforms
 
 from augmentation_runtime import apply_augmentation, build_manifest_entries, load_manifest
 from contracts import build_summary, write_log, write_summary
+from wandb_utils import finish_wandb_run, init_wandb_run, log_summary_to_wandb
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[5]
 PATCHCORE_SRC = REPO_ROOT / "external" / "patchcore-inspection.clean" / "src"
 if str(PATCHCORE_SRC) not in sys.path:
     sys.path.insert(0, str(PATCHCORE_SRC))
@@ -231,12 +246,27 @@ def compute_image_auroc(normal_scores: list[float], anomaly_scores: list[float])
     return float(metrics.compute_imagewise_retrieval_metrics(scores, labels)["auroc"] * 100.0)
 
 
+def derive_manifest_name(manifest_repr: str) -> str:
+    if manifest_repr.startswith("in_memory:"):
+        return manifest_repr
+    return Path(manifest_repr).name
+
+
+def derive_shift_family(manifest_name: str, augmentation_types: list[str]) -> str:
+    if manifest_name.startswith("query_") and manifest_name.endswith(".jsonl"):
+        return manifest_name[len("query_") : -len(".jsonl")]
+    if len(augmentation_types) == 1:
+        return augmentation_types[0]
+    return "multi"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--category", required=True)
     parser.add_argument("--manifest")
     parser.add_argument("--augmentation-type")
     parser.add_argument("--augmentation-types", nargs="+")
+    parser.add_argument("--severities", nargs="+")
     parser.add_argument("--input-root", default="data/query_normal_clean")
     parser.add_argument("--data-root", default="data/row/mvtec_loco_anomaly_detection")
     parser.add_argument("--resize", type=int, default=256)
@@ -244,6 +274,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--sampler-percentage", type=float, default=0.001)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument(
         "--output",
         default="experiments/validation/condition_shift_baseline/reports/patchcore_manifest_shift",
@@ -252,10 +283,15 @@ def main() -> None:
         "--log-dir",
         default="experiments/validation/condition_shift_baseline/reports/patchcore_manifest_shift/logs",
     )
+    parser.add_argument("--use-wandb", action="store_true")
+    parser.add_argument("--wandb-project", default="regram-condition-shift")
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument("--wandb-group", default="patchcore-manifest-shift")
+    parser.add_argument("--wandb-mode", default="online", choices=["online", "offline", "disabled"])
     args = parser.parse_args()
 
     lazy_imports()
-    device = torch.device("cpu")
+    device = torch.device(args.device)
     output_dir = REPO_ROOT / args.output
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -306,6 +342,15 @@ def main() -> None:
         manifest_repr = f"in_memory:{','.join(augmentation_types)}"
     else:
         raise ValueError("Either --manifest or --augmentation-type(s) is required.")
+    selected_severities = list(dict.fromkeys(args.severities or []))
+    if selected_severities:
+        all_entries = [
+            entry for entry in all_entries if entry["severity"] in selected_severities
+        ]
+        if not all_entries:
+            raise ValueError(
+                f"No manifest entries matched category={args.category} and severities={selected_severities}."
+            )
     grouped: dict[str, dict[str, list[dict]]] = {}
     augmentation_types_seen: list[str] = []
     for entry in all_entries:
@@ -313,6 +358,16 @@ def main() -> None:
         if aug_type not in augmentation_types_seen:
             augmentation_types_seen.append(aug_type)
         grouped.setdefault(aug_type, {}).setdefault(entry["severity"], []).append(entry)
+
+    manifest_name = derive_manifest_name(manifest_repr)
+    shift_family = derive_shift_family(manifest_name, augmentation_types_seen)
+    severity_label = (
+        selected_severities[0]
+        if len(selected_severities) == 1
+        else "multi"
+        if selected_severities
+        else "all"
+    )
 
     model = build_patchcore(device, args.imagesize, args.num_workers, args.sampler_percentage)
     model.fit(make_loader(train_dataset, args.batch_size, args.num_workers))
@@ -326,6 +381,10 @@ def main() -> None:
         "updated_at": now_kst_string(),
         "category": args.category,
         "manifest": manifest_repr,
+        "manifest_name": manifest_name,
+        "shift_family": shift_family,
+        "selected_severities": selected_severities or ["low", "medium", "high"],
+        "severity_label": severity_label,
         "augmentation_types": augmentation_types_seen,
         "threshold_policy": "clean_max",
         "clean_good": summarize_scores(clean_scores, clean_threshold),
@@ -350,13 +409,46 @@ def main() -> None:
             summary["image_auroc_vs_clean_anomaly"] = compute_image_auroc(scores, anomaly_scores)
             results["augmentations"][aug_type][severity] = summary
 
-    output_suffix = (
-        augmentation_types_seen[0]
-        if len(augmentation_types_seen) == 1
-        else "multi"
-    )
+    output_suffix = f"{shift_family}_{severity_label}"
     output_path = output_dir / f"{args.category}_{output_suffix}.json"
     log_path = REPO_ROOT / args.log_dir / f"{args.category}_{output_suffix}.log.txt"
+    run_name = f"patchcore-{args.category}-{output_suffix}-{datetime.now().strftime('%Y%m%d')}"
+    wandb_tags = ["PatchCore", "mvtec_loco", shift_family, "manifest_shift"]
+    if selected_severities:
+        wandb_tags.extend(selected_severities)
+    wandb_run = init_wandb_run(
+        enabled=args.use_wandb and args.wandb_mode != "disabled",
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        group=args.wandb_group,
+        name=run_name,
+        tags=wandb_tags,
+        config={
+            "baseline": "PatchCore",
+            "dataset": "mvtec_loco",
+            "class_name": args.category,
+            "eval_type": "manifest_shift",
+            "manifest": manifest_repr,
+            "manifest_name": manifest_name,
+            "shift_family": shift_family,
+            "selected_severities": selected_severities or ["low", "medium", "high"],
+            "severity": selected_severities[0] if len(selected_severities) == 1 else None,
+            "severity_label": severity_label,
+            "augmentation_types": augmentation_types_seen,
+            "input_root": str((REPO_ROOT / args.input_root).resolve()),
+            "data_root": str((REPO_ROOT / args.data_root).resolve()),
+            "resize": args.resize,
+            "imagesize": args.imagesize,
+            "batch_size": args.batch_size,
+            "num_workers": args.num_workers,
+            "sampler_percentage": args.sampler_percentage,
+            "device": args.device,
+            "threshold_policy": "clean_max",
+            "summary_path": str(output_path),
+            "log_path": str(log_path),
+        },
+        mode=args.wandb_mode,
+    )
     summary = build_summary(
         baseline="PatchCore",
         dataset="mvtec_loco",
@@ -367,6 +459,11 @@ def main() -> None:
         log_path=log_path,
         config={
             "manifest": manifest_repr,
+            "manifest_name": manifest_name,
+            "shift_family": shift_family,
+            "selected_severities": selected_severities or ["low", "medium", "high"],
+            "severity": selected_severities[0] if len(selected_severities) == 1 else None,
+            "severity_label": severity_label,
             "augmentation_types": augmentation_types_seen,
             "input_root": str((REPO_ROOT / args.input_root).resolve()),
             "data_root": str((REPO_ROOT / args.data_root).resolve()),
@@ -375,6 +472,7 @@ def main() -> None:
             "batch_size": args.batch_size,
             "num_workers": args.num_workers,
             "sampler_percentage": args.sampler_percentage,
+            "device": args.device,
             "threshold_policy": "clean_max",
         },
         metrics={
@@ -400,11 +498,21 @@ def main() -> None:
             f"class_name={args.category}",
             "eval_type=manifest_shift",
             f"manifest={manifest_repr}",
+            f"manifest_name={manifest_name}",
+            f"shift_family={shift_family}",
+            f"selected_severities={','.join(selected_severities or ['low', 'medium', 'high'])}",
             f"augmentation_types={','.join(augmentation_types_seen)}",
             f"output_path={output_path}",
         ],
     )
     write_summary(summary, output_path)
+    log_summary_to_wandb(
+        wandb_run,
+        summary=summary,
+        summary_path=output_path,
+        log_path=log_path,
+    )
+    finish_wandb_run(wandb_run)
     print(json.dumps(summary, ensure_ascii=True, indent=2))
 
 

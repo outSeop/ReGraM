@@ -14,7 +14,14 @@ from torchvision import transforms
 from augmentation_runtime import apply_augmentation, load_manifest
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+def find_repo_root(start: Path) -> Path:
+    for parent in [start, *start.parents]:
+        if (parent / ".git").exists() or (parent / "index.md").exists():
+            return parent
+    raise RuntimeError(f"Could not find repo root from: {start}")
+
+
+REPO_ROOT = find_repo_root(Path(__file__).resolve())
 PATCHCORE_SRC = REPO_ROOT / "external" / "patchcore-inspection.clean" / "src"
 if str(PATCHCORE_SRC) not in sys.path:
     sys.path.insert(0, str(PATCHCORE_SRC))

@@ -3,6 +3,7 @@
 이 폴더는 `기존 logical AD baseline이 실제로 condition shift에 취약한가?`를 검증하기 위한 실험 스캐폴드다.
 
 빠른 파일 역할 구분은 [docs/FILE_MAP.md](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/docs/FILE_MAP.md)를 먼저 본다.
+실제로 실행되는 Python 소스만 보고 싶으면 [src/README.md](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/README.md)를 본다.
 
 ## 목적
 
@@ -123,6 +124,11 @@ top-level 공통 필드는 아래와 같다.
 
 runner는 노트북 없이 CLI에서 독립 실행 가능해야 한다.
 
+## PatchCore device 정책
+
+- PatchCore runner 기본 device는 `cuda if available else cpu`
+- 필요하면 `--device cpu` 또는 `--device cuda`로 명시적으로 강제한다
+
 ## Git 추적 원칙
 
 - Git이 추적하는 것
@@ -153,9 +159,44 @@ runner는 노트북 없이 CLI에서 독립 실행 가능해야 한다.
 - 비기록 대상
   - 최종 결론 문서
   - 세션 판단 / 확정 / 보류 상태
-  - 공식 보고서 원본
+- 공식 보고서 원본
 
 Markdown 보고서는 wandb 링크를 참고 링크로만 포함한다.
+
+### PatchCore 최소 사용법
+
+PatchCore manifest runner는 옵션으로 wandb tracking을 켤 수 있다.
+
+- 기본값은 off
+- 켤 때는 `--use-wandb`를 준다
+- 여러 shift 비교용 기본 group은 `patchcore-manifest-shift`
+
+예시:
+
+```bash
+python experiments/validation/condition_shift_baseline/src/core/run_patchcore_manifest_shift.py \
+  --category breakfast_box \
+  --manifest manifests/query_motion_blur.jsonl \
+  --severities low \
+  --use-wandb \
+  --wandb-project regram-condition-shift
+```
+
+기록되는 것:
+
+- runner config
+- `manifest_name`, `shift_family` 같은 run-level 비교 축
+- severity를 run-level로 쪼갤 때는 `--severities low`처럼 단일 severity만 넘긴다
+- clean metric
+- augmentation/severity별 핵심 metric
+- `summary.json`, `log.txt` artifact
+
+권장 비교 단위:
+
+- `manifest 하나 = shift 하나`
+- run 하나 = `shift 하나 + severity 하나`
+- 예: `query_motion_blur.jsonl + low`, `query_motion_blur.jsonl + high`
+- 이 경우 wandb에서는 `shift_family`, `severity` 기준으로 run-level 필터링과 그룹화를 한다.
 
 ## 첫 실행 체크리스트
 

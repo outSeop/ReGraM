@@ -1,3 +1,15 @@
+"""Build query manifests for condition-shift experiments.
+
+Role:
+- manifest builder
+- input: query image root grouped by category
+- output: jsonl manifest consumed by evaluation runners
+
+Used by:
+- notebook runner setup
+- manual CLI preprocessing before PatchCore shift evaluation
+"""
+
 from __future__ import annotations
 
 import argparse

@@ -1,3 +1,11 @@
+"""Run a minimal UniVAD smoke test on Colab.
+
+Role:
+- UniVAD smoke runner
+- input: prepared smoke subset and pretrained checkpoints
+- output: tiny summary json and log for setup verification
+"""
+
 from __future__ import annotations
 
 import argparse

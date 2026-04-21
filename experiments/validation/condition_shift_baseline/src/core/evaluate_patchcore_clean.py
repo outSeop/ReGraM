@@ -12,7 +12,14 @@ import torch
 from contracts import build_summary, write_log, write_summary
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+def find_repo_root(start: Path) -> Path:
+    for parent in [start, *start.parents]:
+        if (parent / ".git").exists() or (parent / "index.md").exists():
+            return parent
+    raise RuntimeError(f"Could not find repo root from: {start}")
+
+
+REPO_ROOT = find_repo_root(Path(__file__).resolve())
 PATCHCORE_SRC = REPO_ROOT / "external" / "patchcore-inspection.clean" / "src"
 if str(PATCHCORE_SRC) not in sys.path:
     sys.path.insert(0, str(PATCHCORE_SRC))
@@ -93,13 +100,13 @@ def evaluate_category(
     category: str,
     *,
     data_root: Path,
+    device: torch.device,
     resize: int,
     imagesize: int,
     batch_size: int,
     num_workers: int,
     sampler_percentage: float,
 ) -> dict:
-    device = torch.device("cpu")
     train_dataset = MVTecDataset(
         str(data_root),
         classname=category,
@@ -160,6 +167,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--sampler-percentage", type=float, default=0.001)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument(
         "--output",
         default="experiments/validation/condition_shift_baseline/reports/patchcore_clean_eval.json",
@@ -171,12 +179,14 @@ def main() -> None:
     args = parser.parse_args()
 
     lazy_imports()
+    device = torch.device(args.device)
     results = []
     for category in args.categories:
         print(f"evaluating={category}", flush=True)
         result = evaluate_category(
             category,
             data_root=REPO_ROOT / args.data_root,
+            device=device,
             resize=args.resize,
             imagesize=args.imagesize,
             batch_size=args.batch_size,
@@ -202,7 +212,7 @@ def main() -> None:
         dataset="mvtec_loco",
         class_name="all",
         eval_type="clean",
-        device="cpu",
+        device=str(device),
         output_path=output_path,
         log_path=log_path,
         config={
@@ -213,6 +223,7 @@ def main() -> None:
             "batch_size": args.batch_size,
             "num_workers": args.num_workers,
             "sampler_percentage": args.sampler_percentage,
+            "device": args.device,
         },
         metrics={
             "mean_image_auroc": raw_results["mean_image_auroc"],
