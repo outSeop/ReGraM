@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -260,6 +261,20 @@ def derive_shift_family(manifest_name: str, augmentation_types: list[str]) -> st
     return "multi"
 
 
+def log_phase(log_lines: list[str], phase: str, message: str) -> None:
+    line = f"[{now_kst_string()}] {phase}: {message}"
+    print(line, flush=True)
+    log_lines.append(line)
+
+
+def finish_phase(log_lines: list[str], phase: str, started_at: float, extra: str = "") -> None:
+    elapsed = time.perf_counter() - started_at
+    suffix = f" ({elapsed:.2f}s)"
+    if extra:
+        suffix += f" | {extra}"
+    log_phase(log_lines, phase, f"done{suffix}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--category", required=True)
@@ -290,11 +305,22 @@ def main() -> None:
     parser.add_argument("--wandb-mode", default="online", choices=["online", "offline", "disabled"])
     args = parser.parse_args()
 
+    phase_logs: list[str] = []
+    run_started_at = time.perf_counter()
+    log_phase(
+        phase_logs,
+        "run",
+        f"start | category={args.category} | device={args.device} | manifest={args.manifest or 'in_memory'}",
+    )
+
+    phase_started_at = time.perf_counter()
     lazy_imports()
+    finish_phase(phase_logs, "imports", phase_started_at)
     device = torch.device(args.device)
     output_dir = REPO_ROOT / args.output
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    phase_started_at = time.perf_counter()
     train_dataset = MVTecDataset(
         str(REPO_ROOT / args.data_root),
         classname=args.category,
@@ -317,6 +343,16 @@ def main() -> None:
         resize=args.resize,
         imagesize=args.imagesize,
     )
+    finish_phase(
+        phase_logs,
+        "dataset_setup",
+        phase_started_at,
+        extra=(
+            f"train={len(train_dataset)} | clean={len(clean_dataset)} | anomaly={len(anomaly_dataset)}"
+        ),
+    )
+
+    phase_started_at = time.perf_counter()
     if args.manifest:
         all_entries = [
             entry for entry in load_manifest(Path(args.manifest)) if entry["category"] == args.category
@@ -368,14 +404,37 @@ def main() -> None:
         if selected_severities
         else "all"
     )
+    finish_phase(
+        phase_logs,
+        "manifest_prepare",
+        phase_started_at,
+        extra=(
+            f"entries={len(all_entries)} | shift_family={shift_family} | severities={','.join(selected_severities or ['low', 'medium', 'high'])}"
+        ),
+    )
 
+    phase_started_at = time.perf_counter()
     model = build_patchcore(device, args.imagesize, args.num_workers, args.sampler_percentage)
-    model.fit(make_loader(train_dataset, args.batch_size, args.num_workers))
+    finish_phase(phase_logs, "model_build", phase_started_at)
 
+    phase_started_at = time.perf_counter()
+    model.fit(make_loader(train_dataset, args.batch_size, args.num_workers))
+    finish_phase(phase_logs, "fit_train_good", phase_started_at, extra=f"samples={len(train_dataset)}")
+
+    phase_started_at = time.perf_counter()
     clean_scores, _, _, _ = model.predict(make_loader(clean_dataset, args.batch_size, args.num_workers))
     clean_scores = [float(score) for score in clean_scores]
+    finish_phase(phase_logs, "score_clean_good", phase_started_at, extra=f"samples={len(clean_dataset)}")
+
+    phase_started_at = time.perf_counter()
     anomaly_scores, _, _, _ = model.predict(make_loader(anomaly_dataset, args.batch_size, args.num_workers))
     anomaly_scores = [float(score) for score in anomaly_scores]
+    finish_phase(
+        phase_logs,
+        "score_clean_anomaly",
+        phase_started_at,
+        extra=f"samples={len(anomaly_dataset)}",
+    )
     clean_threshold = float(np.max(clean_scores))
     results = {
         "updated_at": now_kst_string(),
@@ -396,6 +455,7 @@ def main() -> None:
     for aug_type, severity_groups in sorted(grouped.items()):
         results["augmentations"][aug_type] = {}
         for severity, entries in sorted(severity_groups.items()):
+            phase_started_at = time.perf_counter()
             dataset = ManifestSubsetDataset(
                 entries,
                 category=args.category,
@@ -408,6 +468,12 @@ def main() -> None:
             summary["mean_score_shift"] = summary["mean"] - results["clean_good"]["mean"]
             summary["image_auroc_vs_clean_anomaly"] = compute_image_auroc(scores, anomaly_scores)
             results["augmentations"][aug_type][severity] = summary
+            finish_phase(
+                phase_logs,
+                f"score_shifted::{aug_type}/{severity}",
+                phase_started_at,
+                extra=f"samples={len(dataset)}",
+            )
 
     output_suffix = f"{shift_family}_{severity_label}"
     output_path = output_dir / f"{args.category}_{output_suffix}.json"
@@ -416,6 +482,7 @@ def main() -> None:
     wandb_tags = ["PatchCore", "mvtec_loco", shift_family, "manifest_shift"]
     if selected_severities:
         wandb_tags.extend(selected_severities)
+    phase_started_at = time.perf_counter()
     wandb_run = init_wandb_run(
         enabled=args.use_wandb and args.wandb_mode != "disabled",
         project=args.wandb_project,
@@ -449,6 +516,14 @@ def main() -> None:
         },
         mode=args.wandb_mode,
     )
+    finish_phase(
+        phase_logs,
+        "wandb_init",
+        phase_started_at,
+        extra=f"enabled={bool(wandb_run is not None)}",
+    )
+
+    phase_started_at = time.perf_counter()
     summary = build_summary(
         baseline="PatchCore",
         dataset="mvtec_loco",
@@ -489,6 +564,22 @@ def main() -> None:
         },
         payload=results,
     )
+    finish_phase(phase_logs, "build_summary", phase_started_at)
+
+    phase_started_at = time.perf_counter()
+    write_summary(summary, output_path)
+    finish_phase(phase_logs, "write_outputs", phase_started_at, extra=f"summary={output_path.name}")
+
+    phase_started_at = time.perf_counter()
+    log_summary_to_wandb(
+        wandb_run,
+        summary=summary,
+        summary_path=output_path,
+        log_path=log_path,
+    )
+    finish_wandb_run(wandb_run)
+    finish_phase(phase_logs, "wandb_finalize", phase_started_at)
+    finish_phase(phase_logs, "run", run_started_at, extra=f"output={output_path.name}")
     write_log(
         log_path,
         [
@@ -503,16 +594,9 @@ def main() -> None:
             f"selected_severities={','.join(selected_severities or ['low', 'medium', 'high'])}",
             f"augmentation_types={','.join(augmentation_types_seen)}",
             f"output_path={output_path}",
+            *phase_logs,
         ],
     )
-    write_summary(summary, output_path)
-    log_summary_to_wandb(
-        wandb_run,
-        summary=summary,
-        summary_path=output_path,
-        log_path=log_path,
-    )
-    finish_wandb_run(wandb_run)
     print(json.dumps(summary, ensure_ascii=True, indent=2))
 
 
