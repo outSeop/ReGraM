@@ -51,6 +51,14 @@ def log_summary_to_wandb(run, *, summary: dict[str, Any], summary_path: Path, lo
     metrics = summary.get("metrics", {})
     payload = summary.get("payload", {})
     augmentations = payload.get("augmentations", {})
+    shift_family = payload.get("shift_family")
+    severity_label = payload.get("severity_label")
+    is_single_shift_run = bool(
+        shift_family
+        and severity_label
+        and severity_label != "all"
+        and len(augmentations) == 1
+    )
 
     flat_metrics: dict[str, Any] = {
         "clean_image_auroc": metrics.get("clean_image_auroc"),
@@ -62,11 +70,27 @@ def log_summary_to_wandb(run, *, summary: dict[str, Any], summary_path: Path, lo
 
     for aug_type, severity_map in augmentations.items():
         for severity, item in severity_map.items():
-            prefix = f"{aug_type}/{severity}"
-            flat_metrics[f"{prefix}/mean"] = item.get("mean")
-            flat_metrics[f"{prefix}/fpr_over_clean_max"] = item.get("fpr_over_clean_max")
-            flat_metrics[f"{prefix}/mean_score_shift"] = item.get("mean_score_shift")
-            flat_metrics[f"{prefix}/image_auroc_vs_clean_anomaly"] = item.get("image_auroc_vs_clean_anomaly")
+            if is_single_shift_run and aug_type == shift_family and severity == severity_label:
+                flat_metrics["shifted_mean"] = item.get("mean")
+                flat_metrics["shifted_fpr_over_clean_max"] = item.get("fpr_over_clean_max")
+                flat_metrics["shifted_mean_score_shift"] = item.get("mean_score_shift")
+                flat_metrics["shifted_image_auroc_vs_clean_anomaly"] = item.get(
+                    "image_auroc_vs_clean_anomaly"
+                )
+                flat_metrics["primary_mean"] = item.get("mean")
+                flat_metrics["primary_fpr_over_clean_max"] = item.get("fpr_over_clean_max")
+                flat_metrics["primary_mean_score_shift"] = item.get("mean_score_shift")
+                flat_metrics["primary_image_auroc_vs_clean_anomaly"] = item.get(
+                    "image_auroc_vs_clean_anomaly"
+                )
+            else:
+                prefix = f"{aug_type}/{severity}"
+                flat_metrics[f"{prefix}/mean"] = item.get("mean")
+                flat_metrics[f"{prefix}/fpr_over_clean_max"] = item.get("fpr_over_clean_max")
+                flat_metrics[f"{prefix}/mean_score_shift"] = item.get("mean_score_shift")
+                flat_metrics[f"{prefix}/image_auroc_vs_clean_anomaly"] = item.get(
+                    "image_auroc_vs_clean_anomaly"
+                )
 
     run.log(flat_metrics)
 
