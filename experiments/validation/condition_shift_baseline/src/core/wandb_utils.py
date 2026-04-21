@@ -8,6 +8,7 @@ Role:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,10 @@ def init_wandb_run(
         return None
 
     import wandb  # noqa: WPS433
+
+    api_key = os.environ.get("WANDB_API_KEY")
+    if api_key:
+        wandb.login(key=api_key, relogin=True)
 
     return wandb.init(
         project=project,
