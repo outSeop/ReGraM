@@ -83,6 +83,23 @@ def log_summary_to_wandb(run, *, summary: dict[str, Any], summary_path: Path, lo
     run.log_artifact(artifact)
 
 
+def log_preview_images_to_wandb(run, *, preview_images: dict[str, list[dict[str, Any]]]) -> None:
+    if run is None or not preview_images:
+        return
+
+    import wandb  # noqa: WPS433
+
+    logged_payload: dict[str, Any] = {}
+    for key, items in preview_images.items():
+        if not items:
+            continue
+        logged_payload[f"previews/{key}"] = [
+            wandb.Image(item["image"], caption=item["caption"]) for item in items
+        ]
+    if logged_payload:
+        run.log(logged_payload)
+
+
 def finish_wandb_run(run) -> None:
     if run is None:
         return

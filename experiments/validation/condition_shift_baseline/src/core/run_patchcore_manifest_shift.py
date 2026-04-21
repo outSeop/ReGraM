@@ -28,7 +28,12 @@ from torchvision import transforms
 
 from augmentation_runtime import apply_augmentation, build_manifest_entries, load_manifest
 from contracts import build_summary, write_log, write_summary
-from wandb_utils import finish_wandb_run, init_wandb_run, log_summary_to_wandb
+from wandb_utils import (
+    finish_wandb_run,
+    init_wandb_run,
+    log_preview_images_to_wandb,
+    log_summary_to_wandb,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
@@ -275,6 +280,46 @@ def finish_phase(log_lines: list[str], phase: str, started_at: float, extra: str
     log_phase(log_lines, phase, f"done{suffix}")
 
 
+def build_preview_panel(entry: dict, image_path: Path) -> Image.Image:
+    with Image.open(image_path) as image_obj:
+        original = image_obj.convert("RGB")
+    augmented = apply_augmentation(
+        original.copy(),
+        augmentation_type=entry["augmentation_type"],
+        severity=entry["severity"],
+        seed=entry["seed"],
+        params=entry["params"],
+    )
+    original_thumb = original.resize((224, 224))
+    augmented_thumb = augmented.resize((224, 224))
+    canvas = Image.new("RGB", (224 * 2, 224), color=(255, 255, 255))
+    canvas.paste(original_thumb, (0, 0))
+    canvas.paste(augmented_thumb, (224, 0))
+    return canvas
+
+
+def build_preview_images(
+    entries: list[dict],
+    *,
+    max_images: int,
+) -> list[dict[str, object]]:
+    previews: list[dict[str, object]] = []
+    dataset = ManifestSubsetDataset(entries, category=entries[0]["category"])
+    for entry in entries[:max_images]:
+        image_path = dataset._resolve_image_path(entry)
+        panel = build_preview_panel(entry, image_path)
+        previews.append(
+            {
+                "image": panel,
+                "caption": (
+                    f"{entry['augmentation_type']} | {entry['severity']} | "
+                    f"{entry['source_id']}"
+                ),
+            }
+        )
+    return previews
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--category", required=True)
@@ -303,6 +348,8 @@ def main() -> None:
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-group", default="patchcore-manifest-shift")
     parser.add_argument("--wandb-mode", default="online", choices=["online", "offline", "disabled"])
+    parser.add_argument("--wandb-log-images", action="store_true")
+    parser.add_argument("--wandb-max-images", type=int, default=2)
     args = parser.parse_args()
 
     phase_logs: list[str] = []
@@ -451,6 +498,7 @@ def main() -> None:
         "clean_image_auroc": compute_image_auroc(clean_scores, anomaly_scores),
         "augmentations": {},
     }
+    preview_images: dict[str, list[dict[str, object]]] = {}
 
     for aug_type, severity_groups in sorted(grouped.items()):
         results["augmentations"][aug_type] = {}
@@ -468,6 +516,11 @@ def main() -> None:
             summary["mean_score_shift"] = summary["mean"] - results["clean_good"]["mean"]
             summary["image_auroc_vs_clean_anomaly"] = compute_image_auroc(scores, anomaly_scores)
             results["augmentations"][aug_type][severity] = summary
+            if args.wandb_log_images and args.wandb_max_images > 0:
+                preview_images[f"{aug_type}_{severity}"] = build_preview_images(
+                    entries,
+                    max_images=args.wandb_max_images,
+                )
             finish_phase(
                 phase_logs,
                 f"score_shifted::{aug_type}/{severity}",
@@ -511,6 +564,8 @@ def main() -> None:
             "sampler_percentage": args.sampler_percentage,
             "device": args.device,
             "threshold_policy": "clean_max",
+            "wandb_log_images": args.wandb_log_images,
+            "wandb_max_images": args.wandb_max_images,
             "summary_path": str(output_path),
             "log_path": str(log_path),
         },
@@ -549,6 +604,8 @@ def main() -> None:
             "sampler_percentage": args.sampler_percentage,
             "device": args.device,
             "threshold_policy": "clean_max",
+            "wandb_log_images": args.wandb_log_images,
+            "wandb_max_images": args.wandb_max_images,
         },
         metrics={
             "clean_image_auroc": results["clean_image_auroc"],
@@ -577,6 +634,7 @@ def main() -> None:
         summary_path=output_path,
         log_path=log_path,
     )
+    log_preview_images_to_wandb(wandb_run, preview_images=preview_images)
     finish_wandb_run(wandb_run)
     finish_phase(phase_logs, "wandb_finalize", phase_started_at)
     finish_phase(phase_logs, "run", run_started_at, extra=f"output={output_path.name}")

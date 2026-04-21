@@ -179,6 +179,8 @@ python experiments/validation/condition_shift_baseline/src/core/run_patchcore_ma
   --manifest manifests/query_motion_blur.jsonl \
   --severities low \
   --use-wandb \
+  --wandb-log-images \
+  --wandb-max-images 2 \
   --wandb-project regram-condition-shift
 ```
 
@@ -189,6 +191,7 @@ python experiments/validation/condition_shift_baseline/src/core/run_patchcore_ma
 - severity를 run-level로 쪼갤 때는 `--severities low`처럼 단일 severity만 넘긴다
 - clean metric
 - augmentation/severity별 핵심 metric
+- 선택적으로 `원본 | 증강본` preview 이미지 소량
 - `summary.json`, `log.txt` artifact
 
 권장 비교 단위:
