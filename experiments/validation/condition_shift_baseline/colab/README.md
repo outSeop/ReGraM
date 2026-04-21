@@ -49,7 +49,7 @@ python experiments/validation/condition_shift_baseline/colab/bootstrap_runtime.p
 준비된 dataset이 없고 데이터가 원시 LOCO 포맷이면:
 
 ```bash
-python experiments/validation/condition_shift_baseline/prepare_univad_mvtec_loco.py \
+python experiments/validation/condition_shift_baseline/src/univad/prepare_mvtec_loco.py \
   --src-root /content/ReGRaM/data/row/mvtec_loco_anomaly_detection \
   --dst-root data/mvtec_loco_caption
 ```
@@ -57,7 +57,7 @@ python experiments/validation/condition_shift_baseline/prepare_univad_mvtec_loco
 smoke subset 생성:
 
 ```bash
-python experiments/validation/condition_shift_baseline/prepare_univad_smoke_subset.py \
+python experiments/validation/condition_shift_baseline/src/univad/prepare_smoke_subset.py \
   --src-root data/mvtec_loco_caption \
   --dst-root data/mvtec_loco_caption_smoke \
   --class-name breakfast_box
@@ -66,7 +66,7 @@ python experiments/validation/condition_shift_baseline/prepare_univad_smoke_subs
 smoke inference:
 
 ```bash
-python experiments/validation/condition_shift_baseline/run_univad_smoke_colab.py \
+python experiments/validation/condition_shift_baseline/src/univad/run_smoke_colab.py \
   --repo-root . \
   --data-root data/mvtec_loco_caption_smoke \
   --class-name breakfast_box \
@@ -80,7 +80,7 @@ python experiments/validation/condition_shift_baseline/run_univad_smoke_colab.py
 clean 전체 평가:
 
 ```bash
-python experiments/validation/condition_shift_baseline/run_univad_clean_eval.py \
+python experiments/validation/condition_shift_baseline/src/univad/run_clean_eval.py \
   --repo-root . \
   --data-root data/mvtec_loco_caption \
   --class-name breakfast_box \

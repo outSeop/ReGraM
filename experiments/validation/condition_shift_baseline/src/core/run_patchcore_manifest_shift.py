@@ -144,9 +144,18 @@ class ManifestSubsetDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.entries)
 
+    def _resolve_image_path(self, entry: dict) -> Path:
+        source_path = Path(entry["source_path"])
+        path_mode = entry.get("source_path_mode", "absolute")
+        if source_path.is_absolute():
+            return source_path
+        if path_mode == "repo_relative":
+            return REPO_ROOT / source_path
+        return source_path.resolve()
+
     def __getitem__(self, idx: int):
         entry = self.entries[idx]
-        image_path = Path(entry["source_path"])
+        image_path = self._resolve_image_path(entry)
         with Image.open(image_path) as image_obj:
             image = image_obj.convert("RGB")
         image = apply_augmentation(

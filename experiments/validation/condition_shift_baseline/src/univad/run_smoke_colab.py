@@ -10,6 +10,10 @@ import torch
 import torchvision.transforms as transforms
 from PIL import Image
 
+CORE_DIR = Path(__file__).resolve().parents[1] / "core"
+if str(CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_DIR))
+
 from contracts import build_summary, write_log, write_summary
 
 

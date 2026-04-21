@@ -68,6 +68,9 @@ DEFAULT_PARAMS = {
 }
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
 def load_manifest(manifest_path: Path) -> list[dict]:
     entries: list[dict] = []
     for line in manifest_path.read_text(encoding="utf-8").splitlines():
@@ -86,6 +89,7 @@ def build_manifest_entries(
     seed: int = 20260420,
 ) -> list[dict]:
     entries: list[dict] = []
+    input_root = input_root.resolve()
     if identity_only:
         augmentations = ["identity"]
         severities = ["none"]
@@ -106,7 +110,8 @@ def build_manifest_entries(
                     )
                     entries.append(
                         {
-                            "source_path": str(image_path.resolve()),
+                            "source_path": str(image_path.resolve().relative_to(REPO_ROOT)),
+                            "source_path_mode": "repo_relative",
                             "category": category,
                             "source_id": source_id,
                             "augmentation_type": augmentation_type,
