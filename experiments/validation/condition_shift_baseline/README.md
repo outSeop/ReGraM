@@ -189,6 +189,7 @@ python experiments/validation/condition_shift_baseline/src/core/run_patchcore_ma
 - runner config
 - `manifest_name`, `shift_family` 같은 run-level 비교 축
 - severity를 run-level로 쪼갤 때는 `--severities low`처럼 단일 severity만 넘긴다
+- severity의 실제 강도 값도 run-level config에 남긴다. 예: `severity_param_sigma=24.0`, `severity_param_kernel_size=13`
 - clean metric
 - augmentation/severity별 핵심 metric
 - 선택적으로 `원본 | 증강본` preview 이미지 소량

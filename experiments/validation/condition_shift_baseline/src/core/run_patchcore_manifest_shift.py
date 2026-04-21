@@ -320,6 +320,20 @@ def build_preview_images(
     return previews
 
 
+def derive_severity_spec(entries: list[dict]) -> dict[str, object]:
+    if not entries:
+        return {}
+    first_params = dict(entries[0].get("params", {}))
+    for entry in entries[1:]:
+        if dict(entry.get("params", {})) != first_params:
+            return {"mixed": True}
+    return first_params
+
+
+def flatten_severity_spec(spec: dict[str, object]) -> dict[str, object]:
+    return {f"severity_param_{key}": value for key, value in sorted(spec.items())}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--category", required=True)
@@ -451,12 +465,16 @@ def main() -> None:
         if selected_severities
         else "all"
     )
+    severity_spec = derive_severity_spec(all_entries)
+    severity_spec_flat = flatten_severity_spec(severity_spec)
     finish_phase(
         phase_logs,
         "manifest_prepare",
         phase_started_at,
         extra=(
-            f"entries={len(all_entries)} | shift_family={shift_family} | severities={','.join(selected_severities or ['low', 'medium', 'high'])}"
+            f"entries={len(all_entries)} | shift_family={shift_family} | "
+            f"severities={','.join(selected_severities or ['low', 'medium', 'high'])} | "
+            f"severity_spec={json.dumps(severity_spec, ensure_ascii=True, sort_keys=True)}"
         ),
     )
 
@@ -491,6 +509,7 @@ def main() -> None:
         "shift_family": shift_family,
         "selected_severities": selected_severities or ["low", "medium", "high"],
         "severity_label": severity_label,
+        "severity_spec": severity_spec,
         "augmentation_types": augmentation_types_seen,
         "threshold_policy": "clean_max",
         "clean_good": summarize_scores(clean_scores, clean_threshold),
@@ -532,9 +551,16 @@ def main() -> None:
     output_path = output_dir / f"{args.category}_{output_suffix}.json"
     log_path = REPO_ROOT / args.log_dir / f"{args.category}_{output_suffix}.log.txt"
     run_name = f"patchcore-{args.category}-{output_suffix}-{datetime.now().strftime('%Y%m%d')}"
-    wandb_tags = ["PatchCore", "mvtec_loco", shift_family, "manifest_shift"]
+    wandb_tags = [
+        "PatchCore",
+        "mvtec_loco",
+        "manifest_shift",
+        f"shift:{shift_family}",
+        f"severity:{severity_label}",
+        f"class:{args.category}",
+    ]
     if selected_severities:
-        wandb_tags.extend(selected_severities)
+        wandb_tags.extend([f"selected:{severity}" for severity in selected_severities])
     phase_started_at = time.perf_counter()
     wandb_run = init_wandb_run(
         enabled=args.use_wandb and args.wandb_mode != "disabled",
@@ -554,6 +580,7 @@ def main() -> None:
             "selected_severities": selected_severities or ["low", "medium", "high"],
             "severity": selected_severities[0] if len(selected_severities) == 1 else None,
             "severity_label": severity_label,
+            "severity_spec": severity_spec,
             "augmentation_types": augmentation_types_seen,
             "input_root": str((REPO_ROOT / args.input_root).resolve()),
             "data_root": str((REPO_ROOT / args.data_root).resolve()),
@@ -568,6 +595,7 @@ def main() -> None:
             "wandb_max_images": args.wandb_max_images,
             "summary_path": str(output_path),
             "log_path": str(log_path),
+            **severity_spec_flat,
         },
         mode=args.wandb_mode,
     )
@@ -594,6 +622,7 @@ def main() -> None:
             "selected_severities": selected_severities or ["low", "medium", "high"],
             "severity": selected_severities[0] if len(selected_severities) == 1 else None,
             "severity_label": severity_label,
+            "severity_spec": severity_spec,
             "augmentation_types": augmentation_types_seen,
             "input_root": str((REPO_ROOT / args.input_root).resolve()),
             "data_root": str((REPO_ROOT / args.data_root).resolve()),
@@ -606,6 +635,7 @@ def main() -> None:
             "threshold_policy": "clean_max",
             "wandb_log_images": args.wandb_log_images,
             "wandb_max_images": args.wandb_max_images,
+            **severity_spec_flat,
         },
         metrics={
             "clean_image_auroc": results["clean_image_auroc"],
@@ -650,6 +680,7 @@ def main() -> None:
             f"manifest_name={manifest_name}",
             f"shift_family={shift_family}",
             f"selected_severities={','.join(selected_severities or ['low', 'medium', 'high'])}",
+            f"severity_spec={json.dumps(severity_spec, ensure_ascii=True, sort_keys=True)}",
             f"augmentation_types={','.join(augmentation_types_seen)}",
             f"output_path={output_path}",
             *phase_logs,
