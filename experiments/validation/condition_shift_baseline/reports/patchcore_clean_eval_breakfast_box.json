@@ -1,0 +1,17 @@
+{
+  "updated_at": "2026-04-20 19:27:51 KST",
+  "categories": [
+    {
+      "category": "breakfast_box",
+      "train_count": 351,
+      "test_count": 275,
+      "image_auroc": 75.11050663039781,
+      "full_pixel_auroc": 79.54742985083391,
+      "anomaly_pixel_auroc": 76.75826589654464
+    }
+  ],
+  "mean_image_auroc": 75.11050663039781,
+  "mean_full_pixel_auroc": 79.54742985083391,
+  "mean_anomaly_pixel_auroc": 76.75826589654464,
+  "sampler_percentage": 0.001
+}

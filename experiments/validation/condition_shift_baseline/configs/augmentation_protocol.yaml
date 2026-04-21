@@ -1,0 +1,104 @@
+version: 2
+
+goal: "condition/domain augmentation만으로 baseline score가 얼마나 흔들리는지 측정"
+
+general:
+  semantic_preserving: true
+  paired_samples: true
+  keep_threshold_from_clean: true
+  metadata_fields:
+    - source_id
+    - augmentation_type
+    - severity
+    - seed
+    - output_path
+
+augmentations:
+  - name: brightness
+    enabled: true
+    purpose: "global brightness shift sensitivity"
+    params:
+      low: { factor: 0.80 }
+      medium: { factor: 0.60 }
+      high: { factor: 0.40 }
+
+  - name: gaussian_blur
+    enabled: true
+    purpose: "Gaussian blur sensitivity"
+    params:
+      low: { radius: 2.0 }
+      medium: { radius: 4.0 }
+      high: { radius: 6.0 }
+
+  - name: motion_blur
+    enabled: true
+    purpose: "motion blur sensitivity"
+    params:
+      low: { kernel_size: 5 }
+      medium: { kernel_size: 9 }
+      high: { kernel_size: 13 }
+
+  - name: gaussian_noise
+    enabled: true
+    purpose: "Gaussian noise sensitivity"
+    params:
+      low: { sigma: 24.0 }
+      medium: { sigma: 48.0 }
+      high: { sigma: 72.0 }
+
+  - name: compression
+    enabled: true
+    purpose: "JPEG compression sensitivity"
+    params:
+      low: { quality: 45 }
+      medium: { quality: 20 }
+      high: { quality: 10 }
+
+  - name: low_resolution
+    enabled: true
+    purpose: "downsample-upsample sensitivity"
+    params:
+      low: { scale: 0.75 }
+      medium: { scale: 0.50 }
+      high: { scale: 0.33 }
+
+  - name: position_shift
+    enabled: true
+    purpose: "translation sensitivity"
+    params:
+      low: { max_ratio: 0.03 }
+      medium: { max_ratio: 0.06 }
+      high: { max_ratio: 0.10 }
+
+  - name: low_light
+    enabled: true
+    purpose: "combined low-light condition sensitivity"
+    params:
+      low: { brightness: 0.75, contrast: 0.85 }
+      medium: { brightness: 0.55, contrast: 0.75 }
+      high: { brightness: 0.40, contrast: 0.65 }
+
+constraints:
+  forbid_object_addition: true
+  forbid_object_removal: true
+  forbid_heavy_occlusion: true
+  keep_object_count: true
+  keep_logical_label_semantics: true
+  translation_rotation_scale_must_remain_small: true
+
+paths:
+  clean_query_root: data/query_normal_clean
+  augmented_query_root: data/query_normal_augmented
+  pattern: "{augmentation_type}/{severity}/{category}/{source_id}.png"
+
+reporting:
+  required_metrics:
+    - fpr_clean_normal
+    - fpr_augmented_normal
+    - delta_fpr
+    - mean_score_clean_normal
+    - mean_score_augmented_normal
+    - score_shift
+  stratify_by:
+    - augmentation_type
+    - severity

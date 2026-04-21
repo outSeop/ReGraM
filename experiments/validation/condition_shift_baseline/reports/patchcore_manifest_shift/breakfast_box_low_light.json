@@ -1,0 +1,56 @@
+{
+  "updated_at": "2026-04-20 20:13:51 KST",
+  "category": "breakfast_box",
+  "manifest": "in_memory:low_light",
+  "augmentation_type": "low_light",
+  "threshold_policy": "clean_max",
+  "clean_good": {
+    "count": 102,
+    "mean": 6.271225929260254,
+    "std": 0.2286304086446762,
+    "min": 5.841552734375,
+    "max": 7.00401496887207,
+    "fpr_over_clean_max": 0.0
+  },
+  "clean_anomaly": {
+    "count": 173,
+    "mean": 7.0377655029296875,
+    "std": 0.97337806224823,
+    "min": 5.765302658081055,
+    "max": 9.570714950561523,
+    "fpr_over_clean_max": 0.3468208092485549
+  },
+  "clean_image_auroc": 79.58177490649439,
+  "augmentations": {
+    "high": {
+      "count": 102,
+      "mean": 7.002690315246582,
+      "std": 0.22801479697227478,
+      "min": 6.350933074951172,
+      "max": 7.537166595458984,
+      "fpr_over_clean_max": 0.5392156862745098,
+      "mean_score_shift": 0.7314643859863281,
+      "image_auroc_vs_clean_anomaly": 37.073557746798144
+    },
+    "low": {
+      "count": 102,
+      "mean": 6.179295539855957,
+      "std": 0.18624918162822723,
+      "min": 5.808938980102539,
+      "max": 6.885082244873047,
+      "fpr_over_clean_max": 0.0,
+      "mean_score_shift": -0.09193038940429688,
+      "image_auroc_vs_clean_anomaly": 86.0194945030035
+    },
+    "medium": {
+      "count": 102,
+      "mean": 6.563287258148193,
+      "std": 0.2056824415922165,
+      "min": 6.097375869750977,
+      "max": 7.296421051025391,
+      "fpr_over_clean_max": 0.00980392156862745,
+      "mean_score_shift": 0.29206132888793945,
+      "image_auroc_vs_clean_anomaly": 59.248554913294804
+    }
+  }
+}

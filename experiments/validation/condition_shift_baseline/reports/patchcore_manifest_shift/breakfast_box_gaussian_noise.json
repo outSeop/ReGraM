@@ -1,0 +1,44 @@
+{
+  "updated_at": "2026-04-20 19:32:32 KST",
+  "category": "breakfast_box",
+  "manifest": "/Users/song-inseop/\u110b\u1167\u11ab\u1100\u116e/ReGraM/experiments/validation/condition_shift_baseline/manifests/query_gaussian_noise.jsonl",
+  "augmentation_type": "gaussian_noise",
+  "threshold_policy": "clean_max",
+  "clean_good": {
+    "count": 102,
+    "mean": 6.159043788909912,
+    "std": 0.28110188245773315,
+    "min": 5.60084342956543,
+    "max": 7.354877471923828,
+    "fpr_over_clean_max": 0.0
+  },
+  "augmentations": {
+    "high": {
+      "count": 102,
+      "mean": 6.233973503112793,
+      "std": 0.2909746766090393,
+      "min": 5.6790313720703125,
+      "max": 7.165435791015625,
+      "fpr_over_clean_max": 0.0,
+      "mean_score_shift": 0.07492971420288086
+    },
+    "low": {
+      "count": 102,
+      "mean": 6.14977502822876,
+      "std": 0.28274253010749817,
+      "min": 5.6166534423828125,
+      "max": 7.300994873046875,
+      "fpr_over_clean_max": 0.0,
+      "mean_score_shift": -0.009268760681152344
+    },
+    "medium": {
+      "count": 102,
+      "mean": 6.167659759521484,
+      "std": 0.286527156829834,
+      "min": 5.729719161987305,
+      "max": 7.30479621887207,
+      "fpr_over_clean_max": 0.0,
+      "mean_score_shift": 0.008615970611572266
+    }
+  }
+}

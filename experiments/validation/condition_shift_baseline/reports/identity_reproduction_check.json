@@ -1,0 +1,7 @@
+{
+  "manifest": "experiments/validation/condition_shift_baseline/manifests/query_identity.jsonl",
+  "compared": 575,
+  "mismatch_count": 0,
+  "reproduced_exactly": true,
+  "mismatches": []
+}

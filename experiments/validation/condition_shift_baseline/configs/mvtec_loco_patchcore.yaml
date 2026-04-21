@@ -1,0 +1,59 @@
+experiment_name: condition_shift_baseline_mvtec_loco_patchcore
+question: "기존 logical AD baseline이 실제로 condition shift에 취약한가?"
+
+baseline:
+  name: "PatchCore"
+  family: "logical_ad"
+  source: "external_official"
+  note: "amazon-science/patchcore-inspection"
+
+dataset:
+  name: "mvtec_loco_anomaly_detection"
+  categories:
+    - breakfast_box
+    - juice_bottle
+    - pushpins
+    - screw_bag
+    - splicing_connectors
+  reference_normal_clean: "data/reference_normal_clean"
+  query_normal_clean: "data/query_normal_clean"
+  query_normal_augmented: "data/query_normal_augmented"
+  query_logical_anomaly_clean: "data/query_logical_anomaly_clean"
+  query_structural_anomaly_clean: "data/query_structural_anomaly_clean"
+
+shift_protocol:
+  config_path: "experiments/validation/condition_shift_baseline/configs/augmentation_protocol.yaml"
+  kinds:
+    - brightness
+    - gaussian_blur
+    - motion_blur
+    - gaussian_noise
+    - compression
+    - low_resolution
+    - position_shift
+    - low_light
+  severity_levels:
+    - low
+    - medium
+    - high
+  paired_evaluation: true
+  preserve_semantics: true
+
+evaluation:
+  few_shot_k: 4
+  threshold_policy: fixed_from_clean_normal
+  primary_metric: delta_fpr_augmented_minus_clean
+  secondary_metrics:
+    - mean_score_clean_normal
+    - mean_score_augmented_normal
+    - score_shift
+    - score_distribution_overlap
+    - optional_auroc_if_anomaly_split_exists
+
+outputs:
+  result_markdown: "experiments/validation/condition_shift_baseline/results/result_template.md"
+  report_dir: "experiments/validation/condition_shift_baseline/reports/"
+  save_per_sample_scores: true
+
+notes:
+  interpretation_rule: "정상 augmented에서 FPR과 anomaly score가 일관되게 증가하면 condition 취약성 신호로 본다."

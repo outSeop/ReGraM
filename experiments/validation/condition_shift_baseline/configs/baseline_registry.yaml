@@ -1,0 +1,79 @@
+primary_baselines:
+  - name: PatchCore
+    type: external
+    priority: 1
+    family: patch_memory
+    repo_status: official
+    repo_url: https://github.com/amazon-science/patchcore-inspection
+    role: "normal-only memory bank baseline"
+  - name: UniVAD
+    type: external
+    priority: 1
+    family: component_few_shot
+    repo_status: official
+    repo_url: https://github.com/FantasticGNU/UniVAD
+    role: "few-shot training-free component baseline"
+  - name: CSAD
+    type: external
+    priority: 1
+    family: logical_component_segmentation
+    repo_status: official
+    repo_url: https://github.com/Tokichan/CSAD
+    role: "logical anomaly/component segmentation baseline"
+  - name: Position-only
+    type: internal
+    priority: 1
+    family: node_position_matching
+    repo_status: local_todo
+    repo_url: ""
+    role: "minimal internal baseline for location/size-only matching"
+
+secondary_baselines:
+  - name: EfficientAD
+    type: external
+    priority: 2
+    family: student_teacher
+    repo_status: unofficial_verified
+    repo_url: https://github.com/nelson1425/EfficientAD
+    role: "strong industrial AD baseline with unofficial implementation"
+  - name: PaDiM
+    type: external
+    priority: 2
+    family: patch_distribution
+    repo_status: unofficial_verified
+    repo_url: https://github.com/Lornatang/PaDiM
+    role: "classic patch distribution baseline with unofficial implementation"
+  - name: VAE
+    type: external
+    priority: 2
+    family: reconstruction
+    repo_status: not_fixed
+    repo_url: ""
+    role: "legacy reconstruction baseline"
+  - name: AnoGAN
+    type: external
+    priority: 2
+    family: gan_reconstruction
+    repo_status: not_fixed
+    repo_url: ""
+    role: "legacy generative baseline"
+
+internal_progression:
+  - ReGraM-B0
+  - ReGraM-B1
+  - ReGraM-B2
+  - ReGraM-B3
+  - ReGraM-B4
+
+condition_axes:
+  - Clean
+  - White BG
+  - Cable BG
+  - Mesh BG
+  - Low-light CD
+  - Blurry CD
+
+dataset:
+  name: VID-AD
+  repo_status: paper_linked_repo
+  repo_url: https://github.com/nkthiroto/VID-AD

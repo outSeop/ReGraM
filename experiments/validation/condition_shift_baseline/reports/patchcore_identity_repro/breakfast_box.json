@@ -1,0 +1,742 @@
+{
+  "updated_at": "2026-04-20 19:16:29 KST",
+  "category": "breakfast_box",
+  "manifest": "/Users/song-inseop/\u110b\u1167\u11ab\u1100\u116e/ReGraM/experiments/validation/condition_shift_baseline/manifests/query_identity.jsonl",
+  "sampler_percentage": 0.001,
+  "direct_clean": {
+    "count": 102,
+    "mean": 6.149252414703369,
+    "std": 0.24514053761959076,
+    "min": 5.705629348754883,
+    "max": 6.8414459228515625
+  },
+  "manifest_identity": {
+    "count": 102,
+    "mean": 6.149252414703369,
+    "std": 0.24514053761959076,
+    "min": 5.705629348754883,
+    "max": 6.8414459228515625
+  },
+  "score_diff": {
+    "mean_abs_diff": 0.0,
+    "max_abs_diff": 0.0,
+    "allclose_atol_1e-6": true,
+    "allclose_atol_1e-5": true
+  },
+  "per_sample": [
+    {
+      "source_id": "000.png",
+      "direct_score": 6.402317047119141,
+      "manifest_identity_score": 6.402317047119141,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "001.png",
+      "direct_score": 5.995494842529297,
+      "manifest_identity_score": 5.995494842529297,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "002.png",
+      "direct_score": 6.164833068847656,
+      "manifest_identity_score": 6.164833068847656,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "003.png",
+      "direct_score": 6.2718353271484375,
+      "manifest_identity_score": 6.2718353271484375,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "004.png",
+      "direct_score": 5.9229278564453125,
+      "manifest_identity_score": 5.9229278564453125,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "005.png",
+      "direct_score": 6.056995391845703,
+      "manifest_identity_score": 6.056995391845703,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "006.png",
+      "direct_score": 6.19310188293457,
+      "manifest_identity_score": 6.19310188293457,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "007.png",
+      "direct_score": 6.283172607421875,
+      "manifest_identity_score": 6.283172607421875,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "008.png",
+      "direct_score": 5.934751510620117,
+      "manifest_identity_score": 5.934751510620117,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "009.png",
+      "direct_score": 5.962852478027344,
+      "manifest_identity_score": 5.962852478027344,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "010.png",
+      "direct_score": 6.322195053100586,
+      "manifest_identity_score": 6.322195053100586,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "011.png",
+      "direct_score": 5.9516143798828125,
+      "manifest_identity_score": 5.9516143798828125,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "012.png",
+      "direct_score": 6.079929351806641,
+      "manifest_identity_score": 6.079929351806641,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "013.png",
+      "direct_score": 6.545314788818359,
+      "manifest_identity_score": 6.545314788818359,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "014.png",
+      "direct_score": 6.276142120361328,
+      "manifest_identity_score": 6.276142120361328,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "015.png",
+      "direct_score": 6.00877571105957,
+      "manifest_identity_score": 6.00877571105957,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "016.png",
+      "direct_score": 6.223287582397461,
+      "manifest_identity_score": 6.223287582397461,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "017.png",
+      "direct_score": 6.819801330566406,
+      "manifest_identity_score": 6.819801330566406,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "018.png",
+      "direct_score": 6.371343612670898,
+      "manifest_identity_score": 6.371343612670898,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "019.png",
+      "direct_score": 6.591997146606445,
+      "manifest_identity_score": 6.591997146606445,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "020.png",
+      "direct_score": 6.272296905517578,
+      "manifest_identity_score": 6.272296905517578,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "021.png",
+      "direct_score": 5.965532302856445,
+      "manifest_identity_score": 5.965532302856445,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "022.png",
+      "direct_score": 6.420619964599609,
+      "manifest_identity_score": 6.420619964599609,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "023.png",
+      "direct_score": 6.2345123291015625,
+      "manifest_identity_score": 6.2345123291015625,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "024.png",
+      "direct_score": 6.065786361694336,
+      "manifest_identity_score": 6.065786361694336,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "025.png",
+      "direct_score": 5.813695907592773,
+      "manifest_identity_score": 5.813695907592773,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "026.png",
+      "direct_score": 6.396297454833984,
+      "manifest_identity_score": 6.396297454833984,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "027.png",
+      "direct_score": 5.886474609375,
+      "manifest_identity_score": 5.886474609375,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "028.png",
+      "direct_score": 6.0865478515625,
+      "manifest_identity_score": 6.0865478515625,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "029.png",
+      "direct_score": 6.251131057739258,
+      "manifest_identity_score": 6.251131057739258,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "030.png",
+      "direct_score": 6.0986480712890625,
+      "manifest_identity_score": 6.0986480712890625,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "031.png",
+      "direct_score": 6.07121467590332,
+      "manifest_identity_score": 6.07121467590332,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "032.png",
+      "direct_score": 6.0872344970703125,
+      "manifest_identity_score": 6.0872344970703125,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "033.png",
+      "direct_score": 6.048900604248047,
+      "manifest_identity_score": 6.048900604248047,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "034.png",
+      "direct_score": 6.195182800292969,
+      "manifest_identity_score": 6.195182800292969,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "035.png",
+      "direct_score": 6.023534774780273,
+      "manifest_identity_score": 6.023534774780273,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "036.png",
+      "direct_score": 6.135107040405273,
+      "manifest_identity_score": 6.135107040405273,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "037.png",
+      "direct_score": 6.139787673950195,
+      "manifest_identity_score": 6.139787673950195,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "038.png",
+      "direct_score": 6.140745162963867,
+      "manifest_identity_score": 6.140745162963867,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "039.png",
+      "direct_score": 5.705629348754883,
+      "manifest_identity_score": 5.705629348754883,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "040.png",
+      "direct_score": 6.163318634033203,
+      "manifest_identity_score": 6.163318634033203,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "041.png",
+      "direct_score": 5.897527694702148,
+      "manifest_identity_score": 5.897527694702148,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "042.png",
+      "direct_score": 6.283756256103516,
+      "manifest_identity_score": 6.283756256103516,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "043.png",
+      "direct_score": 6.252981185913086,
+      "manifest_identity_score": 6.252981185913086,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "044.png",
+      "direct_score": 6.0138397216796875,
+      "manifest_identity_score": 6.0138397216796875,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "045.png",
+      "direct_score": 5.992313385009766,
+      "manifest_identity_score": 5.992313385009766,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "046.png",
+      "direct_score": 6.056299209594727,
+      "manifest_identity_score": 6.056299209594727,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "047.png",
+      "direct_score": 6.3910369873046875,
+      "manifest_identity_score": 6.3910369873046875,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "048.png",
+      "direct_score": 5.897510528564453,
+      "manifest_identity_score": 5.897510528564453,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "049.png",
+      "direct_score": 6.092233657836914,
+      "manifest_identity_score": 6.092233657836914,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "050.png",
+      "direct_score": 5.856710433959961,
+      "manifest_identity_score": 5.856710433959961,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "051.png",
+      "direct_score": 6.267829895019531,
+      "manifest_identity_score": 6.267829895019531,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "052.png",
+      "direct_score": 5.707029342651367,
+      "manifest_identity_score": 5.707029342651367,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "053.png",
+      "direct_score": 6.8414459228515625,
+      "manifest_identity_score": 6.8414459228515625,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "054.png",
+      "direct_score": 5.948753356933594,
+      "manifest_identity_score": 5.948753356933594,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "055.png",
+      "direct_score": 5.935995101928711,
+      "manifest_identity_score": 5.935995101928711,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "056.png",
+      "direct_score": 6.02789306640625,
+      "manifest_identity_score": 6.02789306640625,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "057.png",
+      "direct_score": 6.715291976928711,
+      "manifest_identity_score": 6.715291976928711,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "058.png",
+      "direct_score": 5.939752578735352,
+      "manifest_identity_score": 5.939752578735352,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "059.png",
+      "direct_score": 6.36613655090332,
+      "manifest_identity_score": 6.36613655090332,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "060.png",
+      "direct_score": 5.928194046020508,
+      "manifest_identity_score": 5.928194046020508,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "061.png",
+      "direct_score": 6.181478500366211,
+      "manifest_identity_score": 6.181478500366211,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "062.png",
+      "direct_score": 6.21504020690918,
+      "manifest_identity_score": 6.21504020690918,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "063.png",
+      "direct_score": 5.844881057739258,
+      "manifest_identity_score": 5.844881057739258,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "064.png",
+      "direct_score": 6.258405685424805,
+      "manifest_identity_score": 6.258405685424805,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "065.png",
+      "direct_score": 6.3108978271484375,
+      "manifest_identity_score": 6.3108978271484375,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "066.png",
+      "direct_score": 5.827571868896484,
+      "manifest_identity_score": 5.827571868896484,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "067.png",
+      "direct_score": 6.209505081176758,
+      "manifest_identity_score": 6.209505081176758,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "068.png",
+      "direct_score": 5.9349822998046875,
+      "manifest_identity_score": 5.9349822998046875,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "069.png",
+      "direct_score": 6.185773849487305,
+      "manifest_identity_score": 6.185773849487305,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "070.png",
+      "direct_score": 6.305219650268555,
+      "manifest_identity_score": 6.305219650268555,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "071.png",
+      "direct_score": 5.818170547485352,
+      "manifest_identity_score": 5.818170547485352,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "072.png",
+      "direct_score": 5.846174240112305,
+      "manifest_identity_score": 5.846174240112305,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "073.png",
+      "direct_score": 6.007909774780273,
+      "manifest_identity_score": 6.007909774780273,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "074.png",
+      "direct_score": 6.272390365600586,
+      "manifest_identity_score": 6.272390365600586,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "075.png",
+      "direct_score": 6.289638519287109,
+      "manifest_identity_score": 6.289638519287109,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "076.png",
+      "direct_score": 6.526876449584961,
+      "manifest_identity_score": 6.526876449584961,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "077.png",
+      "direct_score": 6.048501968383789,
+      "manifest_identity_score": 6.048501968383789,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "078.png",
+      "direct_score": 6.34857177734375,
+      "manifest_identity_score": 6.34857177734375,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "079.png",
+      "direct_score": 5.818248748779297,
+      "manifest_identity_score": 5.818248748779297,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "080.png",
+      "direct_score": 5.85045051574707,
+      "manifest_identity_score": 5.85045051574707,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "081.png",
+      "direct_score": 6.132408142089844,
+      "manifest_identity_score": 6.132408142089844,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "082.png",
+      "direct_score": 5.760828018188477,
+      "manifest_identity_score": 5.760828018188477,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "083.png",
+      "direct_score": 6.120365142822266,
+      "manifest_identity_score": 6.120365142822266,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "084.png",
+      "direct_score": 5.987276077270508,
+      "manifest_identity_score": 5.987276077270508,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "085.png",
+      "direct_score": 6.643867492675781,
+      "manifest_identity_score": 6.643867492675781,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "086.png",
+      "direct_score": 5.822959899902344,
+      "manifest_identity_score": 5.822959899902344,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "087.png",
+      "direct_score": 5.989568710327148,
+      "manifest_identity_score": 5.989568710327148,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "088.png",
+      "direct_score": 6.069622039794922,
+      "manifest_identity_score": 6.069622039794922,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "089.png",
+      "direct_score": 6.226753234863281,
+      "manifest_identity_score": 6.226753234863281,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "090.png",
+      "direct_score": 5.98747444152832,
+      "manifest_identity_score": 5.98747444152832,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "091.png",
+      "direct_score": 6.416572570800781,
+      "manifest_identity_score": 6.416572570800781,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "092.png",
+      "direct_score": 6.767940521240234,
+      "manifest_identity_score": 6.767940521240234,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "093.png",
+      "direct_score": 6.152351379394531,
+      "manifest_identity_score": 6.152351379394531,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "094.png",
+      "direct_score": 6.273279190063477,
+      "manifest_identity_score": 6.273279190063477,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "095.png",
+      "direct_score": 6.402370452880859,
+      "manifest_identity_score": 6.402370452880859,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "096.png",
+      "direct_score": 6.619321823120117,
+      "manifest_identity_score": 6.619321823120117,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "097.png",
+      "direct_score": 6.112693786621094,
+      "manifest_identity_score": 6.112693786621094,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "098.png",
+      "direct_score": 6.145814895629883,
+      "manifest_identity_score": 6.145814895629883,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "099.png",
+      "direct_score": 6.060514450073242,
+      "manifest_identity_score": 6.060514450073242,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "100.png",
+      "direct_score": 6.627866744995117,
+      "manifest_identity_score": 6.627866744995117,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    },
+    {
+      "source_id": "101.png",
+      "direct_score": 5.809849739074707,
+      "manifest_identity_score": 5.809849739074707,
+      "diff": 0.0,
+      "abs_diff": 0.0
+    }
+  ]
+}
