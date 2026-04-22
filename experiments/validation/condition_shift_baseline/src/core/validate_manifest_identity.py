@@ -9,6 +9,8 @@ import numpy as np
 from PIL import Image
 
 from augmentation_runtime import apply_augmentation, load_manifest
+from patchcore_datasets import resolve_manifest_image_path
+from repo_paths import REPO_ROOT
 
 
 def sha256_image(image: Image.Image) -> str:
@@ -19,7 +21,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Validate manifest identity reproduction.")
     parser.add_argument(
         "--manifest",
-        default="experiments/validation/condition_shift_baseline/manifests/query_identity.jsonl",
+        default="manifests/query_identity.jsonl",
     )
     parser.add_argument(
         "--output",
@@ -29,6 +31,8 @@ def main() -> None:
     args = parser.parse_args()
 
     manifest_path = Path(args.manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = REPO_ROOT / manifest_path
     entries = load_manifest(manifest_path)
     if args.limit > 0:
         entries = entries[: args.limit]
@@ -37,7 +41,7 @@ def main() -> None:
     compared = 0
 
     for entry in entries:
-        source_path = Path(entry["source_path"])
+        source_path = resolve_manifest_image_path(entry)
         with Image.open(source_path) as image_obj:
             original = image_obj.convert("RGB")
             reproduced = apply_augmentation(

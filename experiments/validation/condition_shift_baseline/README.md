@@ -37,8 +37,9 @@ baseline 조사와 코드 출처는 [docs/baseline_survey.md](/Users/song-inseop
   - few-shot normal reference
 - `query_normal_clean`
   - clean normal query
-- `manifests/*.jsonl`
+- `manifests/*.jsonl` (repo-top [manifests/](/Users/song-inseop/연구/ReGraM/manifests))
   - 원본 경로와 augmentation 계약을 기록한 on-the-fly query manifest
+  - **canonical location은 repo-top `manifests/` 하나**. `source_path_mode: "repo_relative"` 포맷으로 저장한다. 실험 하위에는 manifest를 두지 않는다.
 
 필요 시 후속으로 아래 split을 추가한다.
 
@@ -55,7 +56,7 @@ baseline 조사와 코드 출처는 [docs/baseline_survey.md](/Users/song-inseop
 
 - `configs/`
   - baseline별 실험 설정 파일
-- `manifests/`
+- `manifests/` (repo-top, 실험 하위에는 두지 않음)
   - on-the-fly augmentation query 정의
 - `results/`
   - baseline별 실행 결과 요약

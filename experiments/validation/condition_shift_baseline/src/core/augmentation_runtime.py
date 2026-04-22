@@ -21,10 +21,13 @@ DEFAULT_AUGMENTATIONS = (
     "low_light",
 )
 
-DEFAULT_PARAMS = {
-    "identity": {
-        "none": {},
-    },
+_IDENTITY_PARAMS = {"identity": {"none": {}}}
+
+# Hardcoded fallback used only when PyYAML is unavailable at import time.
+# When PyYAML is present, augmentation_protocol.yaml is the source of truth and
+# this fallback is cross-checked against it — any drift raises AssertionError.
+_FALLBACK_DEFAULT_PARAMS = {
+    **_IDENTITY_PARAMS,
     "brightness": {
         "low": {"factor": 0.80},
         "medium": {"factor": 0.60},
@@ -76,6 +79,47 @@ def find_repo_root(start: Path) -> Path:
 
 
 REPO_ROOT = find_repo_root(Path(__file__).resolve())
+EXPERIMENT_DIR = Path(__file__).resolve().parents[2]
+AUGMENTATION_PROTOCOL_PATH = EXPERIMENT_DIR / "configs" / "augmentation_protocol.yaml"
+
+
+def load_augmentation_protocol(
+    path: Path | None = None,
+) -> dict[str, dict[str, dict]] | None:
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return None
+
+    target = path or AUGMENTATION_PROTOCOL_PATH
+    doc = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    params: dict[str, dict[str, dict]] = {}
+    for entry in doc.get("augmentations") or []:
+        if not entry.get("enabled", True):
+            continue
+        params[entry["name"]] = dict(entry["params"])
+    return params
+
+
+def _resolve_default_params() -> dict[str, dict[str, dict]]:
+    yaml_params = load_augmentation_protocol()
+    if yaml_params is None:
+        return dict(_FALLBACK_DEFAULT_PARAMS)
+
+    fallback_non_identity = {
+        name: severities
+        for name, severities in _FALLBACK_DEFAULT_PARAMS.items()
+        if name != "identity"
+    }
+    assert yaml_params == fallback_non_identity, (
+        "augmentation_protocol.yaml drift vs. hardcoded fallback. "
+        "YAML is the source of truth; update _FALLBACK_DEFAULT_PARAMS to match. "
+        f"yaml_keys={sorted(yaml_params)} fallback_keys={sorted(fallback_non_identity)}"
+    )
+    return {**_IDENTITY_PARAMS, **yaml_params}
+
+
+DEFAULT_PARAMS = _resolve_default_params()
 
 
 def load_manifest(manifest_path: Path) -> list[dict]:

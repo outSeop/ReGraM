@@ -23,7 +23,7 @@ def main() -> None:
     parser.add_argument("--input-root", default="data/query_normal_clean")
     parser.add_argument(
         "--output",
-        default="experiments/validation/condition_shift_baseline/manifests/query_identity.jsonl",
+        default="manifests/query_identity.jsonl",
     )
     parser.add_argument("--seed", type=int, default=20260420)
     parser.add_argument("--identity-only", action="store_true")

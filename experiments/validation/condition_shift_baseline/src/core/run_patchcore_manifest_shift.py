@@ -16,222 +16,29 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image
-from torchvision import transforms
 
-from augmentation_runtime import apply_augmentation, build_manifest_entries, load_manifest
+from augmentation_runtime import build_manifest_entries, load_manifest
 from contracts import build_summary, write_log, write_summary
+from patchcore_datasets import (
+    ImageFolderDataset,
+    ManifestSubsetDataset,
+    MultiFolderDataset,
+)
+from patchcore_factory import build_patchcore, get_patchcore, make_loader
+from preview_utils import build_preview_images
+from repo_paths import REPO_ROOT, finish_phase, log_phase, now_kst_string
 from wandb_utils import (
     finish_wandb_run,
     init_wandb_run,
     log_preview_images_to_wandb,
     log_summary_to_wandb,
 )
-
-
-REPO_ROOT = Path(__file__).resolve().parents[5]
-PATCHCORE_SRC = REPO_ROOT / "external" / "patchcore-inspection.clean" / "src"
-if str(PATCHCORE_SRC) not in sys.path:
-    sys.path.insert(0, str(PATCHCORE_SRC))
-
-
-patchcore = None
-IMAGENET_MEAN = None
-IMAGENET_STD = None
-DatasetSplit = None
-MVTecDataset = None
-metrics = None
-
-
-def lazy_imports() -> None:
-    global patchcore, IMAGENET_MEAN, IMAGENET_STD, DatasetSplit, MVTecDataset, metrics
-    if patchcore is not None:
-        return
-
-    import patchcore.backbones as _backbones
-    import patchcore.common as _common
-    import patchcore.metrics as _metrics
-    import patchcore.patchcore as _patchcore_module
-    import patchcore.sampler as _sampler
-    from patchcore.datasets.mvtec import (
-        IMAGENET_MEAN as _IMAGENET_MEAN,
-        IMAGENET_STD as _IMAGENET_STD,
-        DatasetSplit as _DatasetSplit,
-        MVTecDataset as _MVTecDataset,
-    )
-
-    class _PatchcoreNamespace:
-        backbones = _backbones
-        common = _common
-        patchcore = _patchcore_module
-        sampler = _sampler
-
-    patchcore = _PatchcoreNamespace()
-    IMAGENET_MEAN = _IMAGENET_MEAN
-    IMAGENET_STD = _IMAGENET_STD
-    DatasetSplit = _DatasetSplit
-    MVTecDataset = _MVTecDataset
-    metrics = _metrics
-
-
-def now_kst_string() -> str:
-    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-
-
-class ImageFolderDataset(torch.utils.data.Dataset):
-    def __init__(self, root: Path, category: str, resize: int = 256, imagesize: int = 224):
-        self.category = category
-        self.image_paths = sorted(root.glob("*.png"))
-        self.transform_img = transforms.Compose(
-            [
-                transforms.Resize(resize),
-                transforms.CenterCrop(imagesize),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-            ]
-        )
-
-    def __len__(self) -> int:
-        return len(self.image_paths)
-
-    def __getitem__(self, idx: int):
-        image_path = self.image_paths[idx]
-        image = Image.open(image_path).convert("RGB")
-        image = self.transform_img(image)
-        return {
-            "image": image,
-            "mask": torch.zeros([1, *image.size()[1:]]),
-            "classname": self.category,
-            "anomaly": "good",
-            "is_anomaly": 0,
-            "image_name": image_path.name,
-            "image_path": str(image_path),
-        }
-
-
-class MultiFolderDataset(torch.utils.data.Dataset):
-    def __init__(self, roots: list[Path], category: str, resize: int = 256, imagesize: int = 224):
-        self.category = category
-        self.image_paths: list[Path] = []
-        for root in roots:
-            self.image_paths.extend(sorted(root.glob("*.png")))
-        self.transform_img = transforms.Compose(
-            [
-                transforms.Resize(resize),
-                transforms.CenterCrop(imagesize),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-            ]
-        )
-
-    def __len__(self) -> int:
-        return len(self.image_paths)
-
-    def __getitem__(self, idx: int):
-        image_path = self.image_paths[idx]
-        image = Image.open(image_path).convert("RGB")
-        image = self.transform_img(image)
-        return {
-            "image": image,
-            "mask": torch.zeros([1, *image.size()[1:]]),
-            "classname": self.category,
-            "anomaly": image_path.parent.name,
-            "is_anomaly": 1,
-            "image_name": image_path.name,
-            "image_path": str(image_path),
-        }
-
-
-class ManifestSubsetDataset(torch.utils.data.Dataset):
-    def __init__(self, entries: list[dict], category: str, resize: int = 256, imagesize: int = 224):
-        self.category = category
-        self.entries = entries
-        self.transform_img = transforms.Compose(
-            [
-                transforms.Resize(resize),
-                transforms.CenterCrop(imagesize),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-            ]
-        )
-
-    def __len__(self) -> int:
-        return len(self.entries)
-
-    def _resolve_image_path(self, entry: dict) -> Path:
-        source_path = Path(entry["source_path"])
-        path_mode = entry.get("source_path_mode", "absolute")
-        if source_path.is_absolute():
-            return source_path
-        if path_mode == "repo_relative":
-            return REPO_ROOT / source_path
-        return source_path.resolve()
-
-    def __getitem__(self, idx: int):
-        entry = self.entries[idx]
-        image_path = self._resolve_image_path(entry)
-        with Image.open(image_path) as image_obj:
-            image = image_obj.convert("RGB")
-        image = apply_augmentation(
-            image,
-            augmentation_type=entry["augmentation_type"],
-            severity=entry["severity"],
-            seed=entry["seed"],
-            params=entry["params"],
-        )
-        image = self.transform_img(image)
-        return {
-            "image": image,
-            "mask": torch.zeros([1, *image.size()[1:]]),
-            "classname": self.category,
-            "anomaly": "good",
-            "is_anomaly": 0,
-            "image_name": entry["source_id"],
-            "image_path": str(image_path),
-        }
-
-
-def build_patchcore(device: torch.device, imagesize: int, num_workers: int, sampler_percentage: float):
-    backbone = patchcore.backbones.load("wideresnet50")
-    backbone.name = "wideresnet50"
-    backbone.seed = None
-
-    nn_method = patchcore.common.FaissNN(False, num_workers)
-    sampler = patchcore.sampler.ApproximateGreedyCoresetSampler(
-        sampler_percentage, device
-    )
-
-    model = patchcore.patchcore.PatchCore(device)
-    model.load(
-        backbone=backbone,
-        layers_to_extract_from=["layer2", "layer3"],
-        device=device,
-        input_shape=(3, imagesize, imagesize),
-        pretrain_embed_dimension=1024,
-        target_embed_dimension=1024,
-        patchsize=3,
-        featuresampler=sampler,
-        anomaly_score_num_nn=1,
-        nn_method=nn_method,
-    )
-    return model
-
-
-def make_loader(dataset, batch_size: int, num_workers: int):
-    return torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=False,
-    )
 
 
 def summarize_scores(scores: list[float], threshold: float) -> dict:
@@ -247,9 +54,10 @@ def summarize_scores(scores: list[float], threshold: float) -> dict:
 
 
 def compute_image_auroc(normal_scores: list[float], anomaly_scores: list[float]) -> float:
+    ns = get_patchcore()
     labels = np.asarray([0] * len(normal_scores) + [1] * len(anomaly_scores), dtype=np.int32)
     scores = np.asarray(normal_scores + anomaly_scores, dtype=np.float32)
-    return float(metrics.compute_imagewise_retrieval_metrics(scores, labels)["auroc"] * 100.0)
+    return float(ns.metrics.compute_imagewise_retrieval_metrics(scores, labels)["auroc"] * 100.0)
 
 
 def derive_manifest_name(manifest_repr: str) -> str:
@@ -264,60 +72,6 @@ def derive_shift_family(manifest_name: str, augmentation_types: list[str]) -> st
     if len(augmentation_types) == 1:
         return augmentation_types[0]
     return "multi"
-
-
-def log_phase(log_lines: list[str], phase: str, message: str) -> None:
-    line = f"[{now_kst_string()}] {phase}: {message}"
-    print(line, flush=True)
-    log_lines.append(line)
-
-
-def finish_phase(log_lines: list[str], phase: str, started_at: float, extra: str = "") -> None:
-    elapsed = time.perf_counter() - started_at
-    suffix = f" ({elapsed:.2f}s)"
-    if extra:
-        suffix += f" | {extra}"
-    log_phase(log_lines, phase, f"done{suffix}")
-
-
-def build_preview_panel(entry: dict, image_path: Path) -> Image.Image:
-    with Image.open(image_path) as image_obj:
-        original = image_obj.convert("RGB")
-    augmented = apply_augmentation(
-        original.copy(),
-        augmentation_type=entry["augmentation_type"],
-        severity=entry["severity"],
-        seed=entry["seed"],
-        params=entry["params"],
-    )
-    original_thumb = original.resize((224, 224))
-    augmented_thumb = augmented.resize((224, 224))
-    canvas = Image.new("RGB", (224 * 2, 224), color=(255, 255, 255))
-    canvas.paste(original_thumb, (0, 0))
-    canvas.paste(augmented_thumb, (224, 0))
-    return canvas
-
-
-def build_preview_images(
-    entries: list[dict],
-    *,
-    max_images: int,
-) -> list[dict[str, object]]:
-    previews: list[dict[str, object]] = []
-    dataset = ManifestSubsetDataset(entries, category=entries[0]["category"])
-    for entry in entries[:max_images]:
-        image_path = dataset._resolve_image_path(entry)
-        panel = build_preview_panel(entry, image_path)
-        previews.append(
-            {
-                "image": panel,
-                "caption": (
-                    f"{entry['augmentation_type']} | {entry['severity']} | "
-                    f"{entry['source_id']}"
-                ),
-            }
-        )
-    return previews
 
 
 def derive_severity_spec(entries: list[dict]) -> dict[str, object]:
@@ -375,19 +129,19 @@ def main() -> None:
     )
 
     phase_started_at = time.perf_counter()
-    lazy_imports()
+    ns = get_patchcore()
     finish_phase(phase_logs, "imports", phase_started_at)
     device = torch.device(args.device)
     output_dir = REPO_ROOT / args.output
     output_dir.mkdir(parents=True, exist_ok=True)
 
     phase_started_at = time.perf_counter()
-    train_dataset = MVTecDataset(
+    train_dataset = ns.MVTecDataset(
         str(REPO_ROOT / args.data_root),
         classname=args.category,
         resize=args.resize,
         imagesize=args.imagesize,
-        split=DatasetSplit.TRAIN,
+        split=ns.DatasetSplit.TRAIN,
     )
     clean_dataset = ImageFolderDataset(
         REPO_ROOT / args.data_root / args.category / "test" / "good",

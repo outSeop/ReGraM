@@ -2,98 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from contracts import build_summary, write_log, write_summary
-
-
-def find_repo_root(start: Path) -> Path:
-    for parent in [start, *start.parents]:
-        if (parent / ".git").exists() or (parent / "index.md").exists():
-            return parent
-    raise RuntimeError(f"Could not find repo root from: {start}")
-
-
-REPO_ROOT = find_repo_root(Path(__file__).resolve())
-PATCHCORE_SRC = REPO_ROOT / "external" / "patchcore-inspection.clean" / "src"
-if str(PATCHCORE_SRC) not in sys.path:
-    sys.path.insert(0, str(PATCHCORE_SRC))
-
-
-patchcore = None
-DatasetSplit = None
-MVTecDataset = None
-metrics = None
-
-
-def lazy_imports() -> None:
-    global patchcore, DatasetSplit, MVTecDataset, metrics
-    if patchcore is not None:
-        return
-
-    import patchcore.backbones as _backbones
-    import patchcore.common as _common
-    import patchcore.metrics as _metrics
-    import patchcore.patchcore as _patchcore_module
-    import patchcore.sampler as _sampler
-    from patchcore.datasets.mvtec import DatasetSplit as _DatasetSplit
-    from patchcore.datasets.mvtec import MVTecDataset as _MVTecDataset
-
-    class _PatchcoreNamespace:
-        backbones = _backbones
-        common = _common
-        patchcore = _patchcore_module
-        sampler = _sampler
-
-    patchcore = _PatchcoreNamespace()
-    DatasetSplit = _DatasetSplit
-    MVTecDataset = _MVTecDataset
-    metrics = _metrics
-
-
-def now_kst_string() -> str:
-    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-
-
-def build_patchcore(device: torch.device, imagesize: int, num_workers: int, sampler_percentage: float):
-    backbone = patchcore.backbones.load("wideresnet50")
-    backbone.name = "wideresnet50"
-    backbone.seed = None
-
-    nn_method = patchcore.common.FaissNN(False, num_workers)
-    sampler = patchcore.sampler.ApproximateGreedyCoresetSampler(
-        sampler_percentage, device
-    )
-
-    model = patchcore.patchcore.PatchCore(device)
-    model.load(
-        backbone=backbone,
-        layers_to_extract_from=["layer2", "layer3"],
-        device=device,
-        input_shape=(3, imagesize, imagesize),
-        pretrain_embed_dimension=1024,
-        target_embed_dimension=1024,
-        patchsize=3,
-        featuresampler=sampler,
-        anomaly_score_num_nn=1,
-        nn_method=nn_method,
-    )
-    return model
-
-
-def make_loader(dataset, batch_size: int, num_workers: int):
-    return torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=False,
-    )
+from patchcore_factory import build_patchcore, get_patchcore, make_loader
+from repo_paths import REPO_ROOT, now_kst_string
 
 
 def evaluate_category(
@@ -107,19 +23,20 @@ def evaluate_category(
     num_workers: int,
     sampler_percentage: float,
 ) -> dict:
-    train_dataset = MVTecDataset(
+    ns = get_patchcore()
+    train_dataset = ns.MVTecDataset(
         str(data_root),
         classname=category,
         resize=resize,
         imagesize=imagesize,
-        split=DatasetSplit.TRAIN,
+        split=ns.DatasetSplit.TRAIN,
     )
-    test_dataset = MVTecDataset(
+    test_dataset = ns.MVTecDataset(
         str(data_root),
         classname=category,
         resize=resize,
         imagesize=imagesize,
-        split=DatasetSplit.TEST,
+        split=ns.DatasetSplit.TEST,
     )
 
     model = build_patchcore(device, imagesize, num_workers, sampler_percentage)
@@ -129,11 +46,15 @@ def evaluate_category(
     )
 
     anomaly_labels = [x[1] != "good" for x in test_dataset.data_to_iterate]
-    image_auroc = metrics.compute_imagewise_retrieval_metrics(scores, anomaly_labels)["auroc"]
-    full_pixel_auroc = metrics.compute_pixelwise_retrieval_metrics(segmentations, masks_gt)["auroc"]
+    image_auroc = ns.metrics.compute_imagewise_retrieval_metrics(scores, anomaly_labels)[
+        "auroc"
+    ]
+    full_pixel_auroc = ns.metrics.compute_pixelwise_retrieval_metrics(
+        segmentations, masks_gt
+    )["auroc"]
 
     sel_idxs = [idx for idx, mask in enumerate(masks_gt) if np.sum(mask) > 0]
-    anomaly_pixel_auroc = metrics.compute_pixelwise_retrieval_metrics(
+    anomaly_pixel_auroc = ns.metrics.compute_pixelwise_retrieval_metrics(
         [segmentations[i] for i in sel_idxs],
         [masks_gt[i] for i in sel_idxs],
     )["auroc"]
@@ -167,7 +88,9 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--sampler-percentage", type=float, default=0.001)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
     parser.add_argument(
         "--output",
         default="experiments/validation/condition_shift_baseline/reports/patchcore_clean_eval.json",
@@ -178,7 +101,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    lazy_imports()
     device = torch.device(args.device)
     results = []
     for category in args.categories:
@@ -200,8 +122,12 @@ def main() -> None:
         "updated_at": now_kst_string(),
         "categories": results,
         "mean_image_auroc": float(np.mean([item["image_auroc"] for item in results])),
-        "mean_full_pixel_auroc": float(np.mean([item["full_pixel_auroc"] for item in results])),
-        "mean_anomaly_pixel_auroc": float(np.mean([item["anomaly_pixel_auroc"] for item in results])),
+        "mean_full_pixel_auroc": float(
+            np.mean([item["full_pixel_auroc"] for item in results])
+        ),
+        "mean_anomaly_pixel_auroc": float(
+            np.mean([item["anomaly_pixel_auroc"] for item in results])
+        ),
         "sampler_percentage": args.sampler_percentage,
     }
 
@@ -240,9 +166,9 @@ def main() -> None:
         log_path,
         [
             "runner=evaluate_patchcore_clean.py",
-            f"baseline=PatchCore",
-            f"dataset=mvtec_loco",
-            f"eval_type=clean",
+            "baseline=PatchCore",
+            "dataset=mvtec_loco",
+            "eval_type=clean",
             f"categories={','.join(args.categories)}",
             f"output_path={output_path}",
         ],
