@@ -122,7 +122,7 @@ def compute_image_auroc(normal_scores: list[float], anomaly_scores: list[float])
 
 
 def derive_manifest_name(manifest_repr: str) -> str:
-    if manifest_repr.startswith("in_memory:"):
+    if manifest_repr.startswith("in_memory:") or manifest_repr.startswith("multi:"):
         return manifest_repr
     return Path(manifest_repr).name
 
@@ -152,7 +152,7 @@ def flatten_severity_spec(spec: dict[str, object]) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--category", required=True)
-    parser.add_argument("--manifest")
+    parser.add_argument("--manifest", nargs="+")
     parser.add_argument("--augmentation-type")
     parser.add_argument("--augmentation-types", nargs="+")
     parser.add_argument("--severities", nargs="+")
@@ -175,7 +175,7 @@ def main() -> None:
     parser.add_argument("--use-wandb", action="store_true")
     parser.add_argument("--wandb-project", default="regram-condition-shift")
     parser.add_argument("--wandb-entity", default=None)
-    parser.add_argument("--wandb-group", default="univad-manifest-shift")
+    parser.add_argument("--wandb-group", default="univad")
     parser.add_argument(
         "--wandb-mode", default="online", choices=["online", "offline", "disabled"]
     )
@@ -188,12 +188,15 @@ def main() -> None:
             "UniVAD manifest-shift requires CUDA. Re-run on a GPU runtime with --device cuda."
         )
 
+    manifest_paths_cli: list[str] = list(args.manifest or [])
+    manifest_start_label = ",".join(manifest_paths_cli) if manifest_paths_cli else "in_memory"
+
     phase_logs: list[str] = []
     run_started_at = time.perf_counter()
     log_phase(
         phase_logs,
         "run",
-        f"start | category={args.category} | device={args.device} | manifest={args.manifest or 'in_memory'}",
+        f"start | category={args.category} | device={args.device} | manifest={manifest_start_label}",
     )
 
     phase_started_at = time.perf_counter()
@@ -206,16 +209,21 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     phase_started_at = time.perf_counter()
-    if args.manifest:
-        manifest_path = Path(args.manifest)
-        if not manifest_path.is_absolute():
-            manifest_path = REPO_ROOT / manifest_path
+    if manifest_paths_cli:
+        resolved_manifest_paths = [
+            path if (path := Path(raw)).is_absolute() else REPO_ROOT / raw
+            for raw in manifest_paths_cli
+        ]
         all_entries = [
             entry
-            for entry in load_manifest(manifest_path)
+            for path in resolved_manifest_paths
+            for entry in load_manifest(path)
             if entry["category"] == args.category
         ]
-        manifest_repr = str(manifest_path)
+        if len(resolved_manifest_paths) == 1:
+            manifest_repr = str(resolved_manifest_paths[0])
+        else:
+            manifest_repr = "multi:" + ",".join(p.name for p in resolved_manifest_paths)
     elif args.augmentation_type or args.augmentation_types:
         augmentation_types = []
         if args.augmentation_type:
@@ -354,6 +362,7 @@ def main() -> None:
             "selected_severities": selected_severities or ["low", "medium", "high"],
             "severity_label": severity_label,
             "severity_spec": severity_spec,
+            "severity_spec_by_cell": {},
             "augmentation_types": augmentation_types_seen,
             "threshold_policy": "clean_max",
             "clean_good": summarize_scores(clean_scores, clean_threshold),
@@ -389,6 +398,9 @@ def main() -> None:
                     shifted_scores, anomaly_scores
                 )
                 results["augmentations"][aug_type][severity] = summary
+                results["severity_spec_by_cell"][f"{aug_type}/{severity}"] = dict(
+                    entries[0].get("params", {})
+                )
                 if args.wandb_log_images and args.wandb_max_images > 0:
                     preview_images[f"{aug_type}_{severity}"] = build_preview_images(
                         entries,

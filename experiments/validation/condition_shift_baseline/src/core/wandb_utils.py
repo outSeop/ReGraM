@@ -8,11 +8,23 @@ Role:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
 
 from repo_paths import REPO_ROOT
+
+
+SHIFT_CELL_COLUMNS = (
+    "shift",
+    "severity",
+    "mean",
+    "fpr_over_clean_max",
+    "mean_score_shift",
+    "image_auroc_vs_clean_anomaly",
+    "severity_param",
+)
 
 
 def _load_env_file(path: Path) -> None:
@@ -74,23 +86,67 @@ def init_wandb_run(
     )
 
 
-def log_summary_to_wandb(run, *, summary: dict[str, Any], summary_path: Path, log_path: Path) -> None:
+def _build_shift_cells(augmentations: dict[str, Any]) -> list[dict[str, Any]]:
+    cells: list[dict[str, Any]] = []
+    for aug_type, severity_map in sorted(augmentations.items()):
+        for severity, item in sorted(severity_map.items()):
+            cells.append(
+                {
+                    "shift": aug_type,
+                    "severity": severity,
+                    "mean": item.get("mean"),
+                    "fpr_over_clean_max": item.get("fpr_over_clean_max"),
+                    "mean_score_shift": item.get("mean_score_shift"),
+                    "image_auroc_vs_clean_anomaly": item.get(
+                        "image_auroc_vs_clean_anomaly"
+                    ),
+                }
+            )
+    return cells
+
+
+def _aggregate_cell_metrics(
+    cells: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not cells:
+        return {}
+
+    fpr_values = [c["fpr_over_clean_max"] for c in cells if c["fpr_over_clean_max"] is not None]
+    worst_idx = max(
+        range(len(cells)),
+        key=lambda i: cells[i]["fpr_over_clean_max"] if cells[i]["fpr_over_clean_max"] is not None else -1.0,
+    )
+    worst = cells[worst_idx]
+
+    severity_buckets: dict[str, list[float]] = {}
+    for cell in cells:
+        value = cell["fpr_over_clean_max"]
+        if value is None:
+            continue
+        severity_buckets.setdefault(cell["severity"], []).append(value)
+
+    aggregate: dict[str, Any] = {
+        "worst_fpr_over_clean_max": worst["fpr_over_clean_max"],
+        "worst_cell": f"{worst['shift']}/{worst['severity']}",
+        "mean_fpr_over_clean_max": sum(fpr_values) / len(fpr_values) if fpr_values else None,
+    }
+    for severity, values in severity_buckets.items():
+        aggregate[f"mean_fpr_by_severity/{severity}"] = sum(values) / len(values)
+    return aggregate
+
+
+def log_summary_to_wandb(
+    run, *, summary: dict[str, Any], summary_path: Path, log_path: Path
+) -> None:
     if run is None:
         return
 
     metrics = summary.get("metrics", {})
     payload = summary.get("payload", {})
     augmentations = payload.get("augmentations", {})
-    shift_family = payload.get("shift_family")
-    severity_label = payload.get("severity_label")
-    is_single_shift_run = bool(
-        shift_family
-        and severity_label
-        and severity_label != "all"
-        and len(augmentations) == 1
-    )
+    severity_spec_by_cell = payload.get("severity_spec_by_cell", {})
 
-    flat_metrics: dict[str, Any] = {
+    top_line: dict[str, Any] = {
         "clean_image_auroc": metrics.get("clean_image_auroc"),
         "clean_good_mean": metrics.get("clean_good_mean"),
         "clean_good_fpr_over_clean_max": metrics.get("clean_good_fpr_over_clean_max"),
@@ -98,33 +154,30 @@ def log_summary_to_wandb(run, *, summary: dict[str, Any], summary_path: Path, lo
         "clean_anomaly_fpr_over_clean_max": metrics.get("clean_anomaly_fpr_over_clean_max"),
     }
 
-    for aug_type, severity_map in augmentations.items():
-        for severity, item in severity_map.items():
-            if is_single_shift_run and aug_type == shift_family and severity == severity_label:
-                flat_metrics["shifted_mean"] = item.get("mean")
-                flat_metrics["shifted_fpr_over_clean_max"] = item.get("fpr_over_clean_max")
-                flat_metrics["shifted_mean_score_shift"] = item.get("mean_score_shift")
-                flat_metrics["shifted_image_auroc_vs_clean_anomaly"] = item.get(
-                    "image_auroc_vs_clean_anomaly"
-                )
-                flat_metrics["primary_mean"] = item.get("mean")
-                flat_metrics["primary_fpr_over_clean_max"] = item.get("fpr_over_clean_max")
-                flat_metrics["primary_mean_score_shift"] = item.get("mean_score_shift")
-                flat_metrics["primary_image_auroc_vs_clean_anomaly"] = item.get(
-                    "image_auroc_vs_clean_anomaly"
-                )
-            else:
-                prefix = f"{aug_type}/{severity}"
-                flat_metrics[f"{prefix}/mean"] = item.get("mean")
-                flat_metrics[f"{prefix}/fpr_over_clean_max"] = item.get("fpr_over_clean_max")
-                flat_metrics[f"{prefix}/mean_score_shift"] = item.get("mean_score_shift")
-                flat_metrics[f"{prefix}/image_auroc_vs_clean_anomaly"] = item.get(
-                    "image_auroc_vs_clean_anomaly"
-                )
-
-    run.log(flat_metrics)
+    cells = _build_shift_cells(augmentations)
+    top_line.update(_aggregate_cell_metrics(cells))
+    run.log(top_line)
 
     import wandb  # noqa: WPS433
+
+    if cells:
+        table = wandb.Table(columns=list(SHIFT_CELL_COLUMNS))
+        for cell in cells:
+            severity_param_raw = severity_spec_by_cell.get(
+                f"{cell['shift']}/{cell['severity']}",
+                payload.get("severity_spec", {}),
+            )
+            severity_param = json.dumps(severity_param_raw, ensure_ascii=True, sort_keys=True)
+            table.add_data(
+                cell["shift"],
+                cell["severity"],
+                cell["mean"],
+                cell["fpr_over_clean_max"],
+                cell["mean_score_shift"],
+                cell["image_auroc_vs_clean_anomaly"],
+                severity_param,
+            )
+        run.log({"shift_cells": table})
 
     artifact = wandb.Artifact(
         name=f"{summary['baseline'].lower()}-{summary['class_name']}-{summary['eval_type']}",
