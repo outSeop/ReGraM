@@ -211,6 +211,24 @@ def _aggregate_cell_metrics(
     return aggregate
 
 
+def _build_per_shift_metrics(cells: list[dict[str, Any]]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    for cell in cells:
+        corruption = cell["shift"]
+        severity = cell["severity"]
+        metric_map = {
+            f"shifted_image_auroc/{corruption}/{severity}": cell["shifted_image_auroc"],
+            f"shifted_normal_fpr/{corruption}/{severity}": cell["shifted_normal_fpr"],
+            f"image_auroc_drop_from_clean/{corruption}/{severity}": cell["image_auroc_drop_from_clean"],
+            f"mean_score_shift/{corruption}/{severity}": cell["mean_score_shift"],
+            f"median_score_shift/{corruption}/{severity}": cell["median_score_shift"],
+        }
+        for key, value in metric_map.items():
+            if value is not None:
+                metrics[key] = value
+    return metrics
+
+
 def log_summary_to_wandb(
     run, *, summary: dict[str, Any], summary_path: Path, log_path: Path
 ) -> None:
@@ -230,6 +248,7 @@ def log_summary_to_wandb(
 
     cells = _build_shift_cells(augmentations)
     top_line.update(_aggregate_cell_metrics(cells))
+    top_line.update(_build_per_shift_metrics(cells))
     run.log(top_line)
 
     import wandb  # noqa: WPS433
