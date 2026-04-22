@@ -12,6 +12,27 @@ import os
 from pathlib import Path
 from typing import Any
 
+from repo_paths import REPO_ROOT
+
+
+def _load_env_file(path: Path) -> None:
+    """Populate os.environ from a KEY=VALUE file without overriding existing vars.
+
+    No deps, no interpolation, no multi-line values — matches the 12-factor
+    subset of .env semantics that's enough for API keys. Existing env vars win.
+    """
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
 
 def init_wandb_run(
     *,
@@ -29,9 +50,18 @@ def init_wandb_run(
 
     import wandb  # noqa: WPS433
 
+    _load_env_file(REPO_ROOT / ".env")
+
     api_key = os.environ.get("WANDB_API_KEY")
     if api_key:
         wandb.login(key=api_key, relogin=True)
+    elif mode == "online":
+        raise RuntimeError(
+            "WANDB_API_KEY is not set and --wandb-mode=online. "
+            "Set it in the process env or add WANDB_API_KEY=... to "
+            f"{REPO_ROOT / '.env'} (see .env.example). "
+            "Use --wandb-mode=offline to skip cloud sync."
+        )
 
     return wandb.init(
         project=project,
