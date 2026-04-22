@@ -23,6 +23,7 @@ from wandb_utils import (
 
 DEFAULT_SELECTED_SEVERITIES = ("low", "medium", "high")
 THRESHOLD_POLICY_CLEAN_MAX = "clean_max"
+DEFAULT_GALLERY_SAMPLE_LIMIT = 6
 
 
 @dataclass(frozen=True)
@@ -179,13 +180,29 @@ def build_manifest_prepare_extra(run_spec: ManifestShiftRunSpec) -> str:
     )
 
 
+def _mean_or_none(values: list[float]) -> float | None:
+    return float(np.mean(values)) if values else None
+
+
+def _max_or_none(values: list[float]) -> float | None:
+    return float(max(values)) if values else None
+
+
+def _percentile(array: np.ndarray, q: float) -> float:
+    return float(np.percentile(array, q)) if array.size else 0.0
+
+
 def summarize_scores(scores: list[float], threshold: float) -> dict[str, float | int]:
     array = np.asarray(scores, dtype=np.float32)
     return {
         "count": int(array.size),
         "mean": float(array.mean()) if array.size else 0.0,
+        "median": _percentile(array, 50.0),
         "std": float(array.std()) if array.size else 0.0,
         "min": float(array.min()) if array.size else 0.0,
+        "p25": _percentile(array, 25.0),
+        "p75": _percentile(array, 75.0),
+        "p95": _percentile(array, 95.0),
         "max": float(array.max()) if array.size else 0.0,
         "fpr_over_clean_max": float((array > threshold).mean()) if array.size else 0.0,
     }
@@ -229,6 +246,34 @@ def record_shift_cell(
 ) -> None:
     results["augmentations"].setdefault(aug_type, {})[severity] = summary
     results["severity_spec_by_cell"][f"{aug_type}/{severity}"] = dict(entries[0].get("params", {}))
+
+
+def build_shift_sample_rows(
+    *,
+    entries: list[dict[str, Any]],
+    scores: list[float],
+    clean_good_mean: float,
+    max_items: int = DEFAULT_GALLERY_SAMPLE_LIMIT,
+) -> list[dict[str, Any]]:
+    from patchcore_datasets import resolve_manifest_image_path  # noqa: WPS433
+
+    rows: list[dict[str, Any]] = []
+    for entry, score in list(zip(entries, scores, strict=False))[:max_items]:
+        image_path = resolve_manifest_image_path(entry)
+        rows.append(
+            {
+                "source_id": entry.get("source_id"),
+                "image_path": str(image_path),
+                "image_name": Path(image_path).name,
+                "score": float(score),
+                "score_delta_from_clean_mean": float(score - clean_good_mean),
+                "augmentation_type": entry.get("augmentation_type"),
+                "severity": entry.get("severity"),
+                "seed": entry.get("seed"),
+                "params": dict(entry.get("params", {})),
+            }
+        )
+    return rows
 
 
 def prepare_output_paths(
@@ -290,10 +335,117 @@ def build_clean_metric_snapshot(results: dict[str, Any]) -> dict[str, Any]:
     return {
         "clean_image_auroc": results["clean_image_auroc"],
         "clean_good_mean": clean_good["mean"],
+        "clean_good_median": clean_good["median"],
         "clean_good_fpr_over_clean_max": clean_good["fpr_over_clean_max"],
         "clean_anomaly_mean": clean_anomaly["mean"],
+        "clean_anomaly_median": clean_anomaly["median"],
         "clean_anomaly_fpr_over_clean_max": clean_anomaly["fpr_over_clean_max"],
     }
+
+
+def build_shift_metric_snapshot(results: dict[str, Any]) -> dict[str, Any]:
+    cells: list[dict[str, Any]] = []
+    for aug_type, severity_map in sorted(results.get("augmentations", {}).items()):
+        for severity, item in sorted(severity_map.items()):
+            cells.append(
+                {
+                    "cell_key": f"{aug_type}/{severity}",
+                    "severity": severity,
+                    "shifted_normal_fpr": item.get(
+                        "shifted_normal_fpr",
+                        item.get("fpr_over_clean_max"),
+                    ),
+                    "image_auroc_drop_from_clean": item.get("image_auroc_drop_from_clean"),
+                    "mean_score_shift": item.get("mean_score_shift"),
+                    "median_score_shift": item.get("median_score_shift"),
+                }
+            )
+
+    if not cells:
+        return {}
+
+    fpr_values = [
+        float(cell["shifted_normal_fpr"])
+        for cell in cells
+        if cell["shifted_normal_fpr"] is not None
+    ]
+    auroc_drop_values = [
+        float(cell["image_auroc_drop_from_clean"])
+        for cell in cells
+        if cell["image_auroc_drop_from_clean"] is not None
+    ]
+    mean_shift_values = [
+        float(cell["mean_score_shift"])
+        for cell in cells
+        if cell["mean_score_shift"] is not None
+    ]
+    median_shift_values = [
+        float(cell["median_score_shift"])
+        for cell in cells
+        if cell["median_score_shift"] is not None
+    ]
+
+    worst_fpr_cell = max(
+        cells,
+        key=lambda cell: cell["shifted_normal_fpr"]
+        if cell["shifted_normal_fpr"] is not None
+        else -1.0,
+    )
+    worst_auroc_drop_cell = max(
+        cells,
+        key=lambda cell: cell["image_auroc_drop_from_clean"]
+        if cell["image_auroc_drop_from_clean"] is not None
+        else -1.0,
+    )
+
+    snapshot: dict[str, Any] = {
+        "mean_shifted_normal_fpr": _mean_or_none(fpr_values),
+        "worst_shifted_normal_fpr": _max_or_none(fpr_values),
+        "mean_fpr_over_clean_max": _mean_or_none(fpr_values),
+        "worst_fpr_over_clean_max": _max_or_none(fpr_values),
+        "worst_shift_cell_by_fpr": worst_fpr_cell["cell_key"],
+        "worst_cell": worst_fpr_cell["cell_key"],
+        "mean_image_auroc_drop_from_clean": _mean_or_none(auroc_drop_values),
+        "worst_image_auroc_drop_from_clean": _max_or_none(auroc_drop_values),
+        "worst_shift_cell_by_auroc_drop": worst_auroc_drop_cell["cell_key"],
+        "mean_score_shift": _mean_or_none(mean_shift_values),
+        "mean_median_score_shift": _mean_or_none(median_shift_values),
+    }
+
+    severity_buckets: dict[str, dict[str, list[float]]] = {}
+    for cell in cells:
+        bucket = severity_buckets.setdefault(
+            cell["severity"],
+            {
+                "shifted_normal_fpr": [],
+                "image_auroc_drop_from_clean": [],
+                "mean_score_shift": [],
+                "median_score_shift": [],
+            },
+        )
+        for key in bucket:
+            value = cell.get(key)
+            if value is not None:
+                bucket[key].append(float(value))
+
+    for severity, bucket in sorted(severity_buckets.items()):
+        snapshot[f"mean_shifted_normal_fpr_by_severity/{severity}"] = _mean_or_none(
+            bucket["shifted_normal_fpr"]
+        )
+        snapshot[f"mean_fpr_by_severity/{severity}"] = _mean_or_none(
+            bucket["shifted_normal_fpr"]
+        )
+        snapshot[f"mean_image_auroc_drop_from_clean_by_severity/{severity}"] = _mean_or_none(
+            bucket["image_auroc_drop_from_clean"]
+        )
+        snapshot[f"mean_score_shift_by_severity/{severity}"] = _mean_or_none(
+            bucket["mean_score_shift"]
+        )
+        snapshot[f"mean_median_score_shift_by_severity/{severity}"] = _mean_or_none(
+            bucket["median_score_shift"]
+        )
+
+    return snapshot
 
 
 def _build_wandb_tags(

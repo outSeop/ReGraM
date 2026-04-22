@@ -19,10 +19,13 @@ from repo_paths import REPO_ROOT
 SHIFT_CELL_COLUMNS = (
     "shift",
     "severity",
-    "mean",
-    "fpr_over_clean_max",
+    "shifted_normal_mean",
+    "shifted_normal_median",
+    "shifted_normal_fpr",
     "mean_score_shift",
-    "image_auroc_vs_clean_anomaly",
+    "median_score_shift",
+    "shifted_image_auroc",
+    "image_auroc_drop_from_clean",
     "severity_param",
 )
 
@@ -94,11 +97,20 @@ def _build_shift_cells(augmentations: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "shift": aug_type,
                     "severity": severity,
-                    "mean": item.get("mean"),
-                    "fpr_over_clean_max": item.get("fpr_over_clean_max"),
+                    "shifted_normal_mean": item.get("mean"),
+                    "shifted_normal_median": item.get("median"),
+                    "shifted_normal_fpr": item.get(
+                        "shifted_normal_fpr",
+                        item.get("fpr_over_clean_max"),
+                    ),
                     "mean_score_shift": item.get("mean_score_shift"),
-                    "image_auroc_vs_clean_anomaly": item.get(
-                        "image_auroc_vs_clean_anomaly"
+                    "median_score_shift": item.get("median_score_shift"),
+                    "shifted_image_auroc": item.get(
+                        "shifted_image_auroc",
+                        item.get("image_auroc_vs_clean_anomaly"),
+                    ),
+                    "image_auroc_drop_from_clean": item.get(
+                        "image_auroc_drop_from_clean"
                     ),
                 }
             )
@@ -111,27 +123,71 @@ def _aggregate_cell_metrics(
     if not cells:
         return {}
 
-    fpr_values = [c["fpr_over_clean_max"] for c in cells if c["fpr_over_clean_max"] is not None]
+    fpr_values = [c["shifted_normal_fpr"] for c in cells if c["shifted_normal_fpr"] is not None]
+    auroc_drop_values = [
+        c["image_auroc_drop_from_clean"]
+        for c in cells
+        if c["image_auroc_drop_from_clean"] is not None
+    ]
+    mean_shift_values = [c["mean_score_shift"] for c in cells if c["mean_score_shift"] is not None]
     worst_idx = max(
         range(len(cells)),
-        key=lambda i: cells[i]["fpr_over_clean_max"] if cells[i]["fpr_over_clean_max"] is not None else -1.0,
+        key=lambda i: cells[i]["shifted_normal_fpr"] if cells[i]["shifted_normal_fpr"] is not None else -1.0,
     )
     worst = cells[worst_idx]
 
-    severity_buckets: dict[str, list[float]] = {}
+    severity_buckets: dict[str, dict[str, list[float]]] = {}
     for cell in cells:
-        value = cell["fpr_over_clean_max"]
-        if value is None:
-            continue
-        severity_buckets.setdefault(cell["severity"], []).append(value)
+        bucket = severity_buckets.setdefault(
+            cell["severity"],
+            {
+                "shifted_normal_fpr": [],
+                "image_auroc_drop_from_clean": [],
+                "mean_score_shift": [],
+            },
+        )
+        for key in bucket:
+            value = cell[key]
+            if value is not None:
+                bucket[key].append(value)
 
     aggregate: dict[str, Any] = {
-        "worst_fpr_over_clean_max": worst["fpr_over_clean_max"],
-        "worst_cell": f"{worst['shift']}/{worst['severity']}",
+        "mean_shifted_normal_fpr": sum(fpr_values) / len(fpr_values) if fpr_values else None,
+        "worst_shifted_normal_fpr": worst["shifted_normal_fpr"],
         "mean_fpr_over_clean_max": sum(fpr_values) / len(fpr_values) if fpr_values else None,
+        "worst_fpr_over_clean_max": worst["shifted_normal_fpr"],
+        "worst_shift_cell_by_fpr": f"{worst['shift']}/{worst['severity']}",
+        "worst_cell": f"{worst['shift']}/{worst['severity']}",
+        "mean_image_auroc_drop_from_clean": (
+            sum(auroc_drop_values) / len(auroc_drop_values) if auroc_drop_values else None
+        ),
+        "worst_image_auroc_drop_from_clean": max(auroc_drop_values) if auroc_drop_values else None,
+        "mean_score_shift": sum(mean_shift_values) / len(mean_shift_values) if mean_shift_values else None,
     }
-    for severity, values in severity_buckets.items():
-        aggregate[f"mean_fpr_by_severity/{severity}"] = sum(values) / len(values)
+    if auroc_drop_values:
+        worst_auroc_drop = max(
+            cells,
+            key=lambda cell: cell["image_auroc_drop_from_clean"]
+            if cell["image_auroc_drop_from_clean"] is not None
+            else -1.0,
+        )
+        aggregate["worst_shift_cell_by_auroc_drop"] = (
+            f"{worst_auroc_drop['shift']}/{worst_auroc_drop['severity']}"
+        )
+    for severity, bucket in severity_buckets.items():
+        if bucket["shifted_normal_fpr"]:
+            value = sum(bucket["shifted_normal_fpr"]) / len(bucket["shifted_normal_fpr"])
+            aggregate[f"mean_shifted_normal_fpr_by_severity/{severity}"] = value
+            aggregate[f"mean_fpr_by_severity/{severity}"] = value
+        if bucket["image_auroc_drop_from_clean"]:
+            aggregate[f"mean_image_auroc_drop_from_clean_by_severity/{severity}"] = (
+                sum(bucket["image_auroc_drop_from_clean"])
+                / len(bucket["image_auroc_drop_from_clean"])
+            )
+        if bucket["mean_score_shift"]:
+            aggregate[f"mean_score_shift_by_severity/{severity}"] = (
+                sum(bucket["mean_score_shift"]) / len(bucket["mean_score_shift"])
+            )
     return aggregate
 
 
@@ -147,11 +203,9 @@ def log_summary_to_wandb(
     severity_spec_by_cell = payload.get("severity_spec_by_cell", {})
 
     top_line: dict[str, Any] = {
-        "clean_image_auroc": metrics.get("clean_image_auroc"),
-        "clean_good_mean": metrics.get("clean_good_mean"),
-        "clean_good_fpr_over_clean_max": metrics.get("clean_good_fpr_over_clean_max"),
-        "clean_anomaly_mean": metrics.get("clean_anomaly_mean"),
-        "clean_anomaly_fpr_over_clean_max": metrics.get("clean_anomaly_fpr_over_clean_max"),
+        key: value
+        for key, value in metrics.items()
+        if isinstance(value, (int, float)) and value is not None
     }
 
     cells = _build_shift_cells(augmentations)
@@ -171,10 +225,13 @@ def log_summary_to_wandb(
             table.add_data(
                 cell["shift"],
                 cell["severity"],
-                cell["mean"],
-                cell["fpr_over_clean_max"],
+                cell["shifted_normal_mean"],
+                cell["shifted_normal_median"],
+                cell["shifted_normal_fpr"],
                 cell["mean_score_shift"],
-                cell["image_auroc_vs_clean_anomaly"],
+                cell["median_score_shift"],
+                cell["shifted_image_auroc"],
+                cell["image_auroc_drop_from_clean"],
                 severity_param,
             )
         run.log({"shift_cells": table})

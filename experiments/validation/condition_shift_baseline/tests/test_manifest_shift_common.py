@@ -16,8 +16,10 @@ if str(CORE_DIR) not in sys.path:
 from manifest_shift_common import (  # noqa: E402
     THRESHOLD_POLICY_CLEAN_MAX,
     build_common_run_config,
+    build_shift_metric_snapshot,
     prepare_manifest_shift_run_spec,
     prepare_output_paths,
+    summarize_scores,
 )
 from repo_paths import REPO_ROOT  # noqa: E402
 
@@ -135,6 +137,55 @@ class ManifestShiftCommonTests(unittest.TestCase):
         self.assertEqual(config["severity_param_kernel_size"], 5)
         self.assertTrue(str(output_paths.output_path).endswith("breakfast_box_motion_blur_low.json"))
         self.assertTrue(str(output_paths.log_path).endswith("breakfast_box_motion_blur_low.log.txt"))
+
+    def test_summarize_scores_includes_distribution_stats(self) -> None:
+        summary = summarize_scores([0.1, 0.2, 0.4, 0.8], threshold=0.3)
+
+        self.assertEqual(summary["count"], 4)
+        self.assertAlmostEqual(summary["median"], 0.3, places=6)
+        self.assertAlmostEqual(summary["p25"], 0.175, places=6)
+        self.assertAlmostEqual(summary["p75"], 0.5, places=6)
+        self.assertAlmostEqual(summary["p95"], 0.74, places=6)
+        self.assertAlmostEqual(summary["fpr_over_clean_max"], 0.5, places=6)
+
+    def test_shift_metric_snapshot_aggregates_new_metrics(self) -> None:
+        results = {
+            "augmentations": {
+                "brightness": {
+                    "low": {
+                        "shifted_normal_fpr": 0.2,
+                        "image_auroc_drop_from_clean": 1.5,
+                        "mean_score_shift": 0.1,
+                        "median_score_shift": 0.08,
+                    },
+                },
+                "motion_blur": {
+                    "high": {
+                        "shifted_normal_fpr": 0.6,
+                        "image_auroc_drop_from_clean": 4.0,
+                        "mean_score_shift": 0.3,
+                        "median_score_shift": 0.25,
+                    },
+                },
+            }
+        }
+
+        snapshot = build_shift_metric_snapshot(results)
+
+        self.assertAlmostEqual(snapshot["mean_shifted_normal_fpr"], 0.4, places=6)
+        self.assertAlmostEqual(snapshot["worst_shifted_normal_fpr"], 0.6, places=6)
+        self.assertEqual(snapshot["worst_shift_cell_by_fpr"], "motion_blur/high")
+        self.assertAlmostEqual(snapshot["mean_image_auroc_drop_from_clean"], 2.75, places=6)
+        self.assertAlmostEqual(snapshot["worst_image_auroc_drop_from_clean"], 4.0, places=6)
+        self.assertEqual(snapshot["worst_shift_cell_by_auroc_drop"], "motion_blur/high")
+        self.assertAlmostEqual(snapshot["mean_score_shift"], 0.2, places=6)
+        self.assertAlmostEqual(snapshot["mean_median_score_shift"], 0.165, places=6)
+        self.assertAlmostEqual(snapshot["mean_fpr_by_severity/low"], 0.2, places=6)
+        self.assertAlmostEqual(
+            snapshot["mean_image_auroc_drop_from_clean_by_severity/high"],
+            4.0,
+            places=6,
+        )
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from manifest_shift_common import (
+    DEFAULT_GALLERY_SAMPLE_LIMIT,
     build_clean_metric_snapshot,
     build_common_run_config,
     build_manifest_prepare_extra,
@@ -17,6 +18,8 @@ from manifest_shift_common import (
     build_manifest_shift_summary,
     build_results_scaffold,
     build_run_name,
+    build_shift_sample_rows,
+    build_shift_metric_snapshot,
     finalize_manifest_shift_tracking,
     init_manifest_shift_wandb_run,
     prepare_manifest_shift_run_spec,
@@ -169,6 +172,10 @@ def main() -> None:
         clean_anomaly=summarize_scores(anomaly_scores, clean_threshold),
         clean_image_auroc=compute_image_auroc(clean_scores, anomaly_scores),
     )
+    results["clean_score_distributions"] = {
+        "clean_normal_scores": clean_scores,
+        "clean_anomaly_scores": anomaly_scores,
+    }
     preview_images: dict[str, list[dict[str, object]]] = {}
 
     for aug_type, severity_groups in sorted(run_spec.grouped_entries.items()):
@@ -183,8 +190,21 @@ def main() -> None:
             scores, _, _, _ = model.predict(make_loader(dataset, args.batch_size, args.num_workers))
             scores = [float(score) for score in scores]
             summary = summarize_scores(scores, clean_threshold)
+            summary["shifted_normal_fpr"] = summary["fpr_over_clean_max"]
             summary["mean_score_shift"] = summary["mean"] - results["clean_good"]["mean"]
-            summary["image_auroc_vs_clean_anomaly"] = compute_image_auroc(scores, anomaly_scores)
+            summary["median_score_shift"] = summary["median"] - results["clean_good"]["median"]
+            summary["shifted_image_auroc"] = compute_image_auroc(scores, anomaly_scores)
+            summary["image_auroc_vs_clean_anomaly"] = summary["shifted_image_auroc"]
+            summary["image_auroc_drop_from_clean"] = (
+                results["clean_image_auroc"] - summary["shifted_image_auroc"]
+            )
+            summary["shifted_normal_scores"] = scores
+            summary["sample_rows"] = build_shift_sample_rows(
+                entries=entries,
+                scores=scores,
+                clean_good_mean=results["clean_good"]["mean"],
+                max_items=max(DEFAULT_GALLERY_SAMPLE_LIMIT, args.wandb_max_images),
+            )
             record_shift_cell(
                 results,
                 aug_type=aug_type,
@@ -261,7 +281,10 @@ def main() -> None:
         device=str(device),
         output_paths=output_paths,
         config=common_run_config,
-        metrics=build_clean_metric_snapshot(results),
+        metrics={
+            **build_clean_metric_snapshot(results),
+            **build_shift_metric_snapshot(results),
+        },
         paths={
             "repo_root": REPO_ROOT,
             "input_root": input_root.resolve(),
