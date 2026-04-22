@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import inspect
 import json
 import os
 import sys
@@ -188,7 +189,10 @@ def main() -> None:
 
     with univad_runtime_context(univad_root):
         phase_started_at = time.perf_counter()
-        model = UniVAD(image_size=args.image_size, device=device).to(device)
+        constructor_kwargs = {"image_size": args.image_size}
+        if "device" in inspect.signature(UniVAD.__init__).parameters:
+            constructor_kwargs["device"] = device
+        model = UniVAD(**constructor_kwargs).to(device)
         finish_phase(phase_logs, "model_build", phase_started_at)
 
         phase_started_at = time.perf_counter()
