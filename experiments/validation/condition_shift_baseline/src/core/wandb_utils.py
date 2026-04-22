@@ -21,12 +21,30 @@ SHIFT_CELL_COLUMNS = (
     "severity",
     "shifted_normal_mean",
     "shifted_normal_median",
+    "p25",
+    "p75",
     "shifted_normal_fpr",
     "mean_score_shift",
     "median_score_shift",
     "shifted_image_auroc",
     "image_auroc_drop_from_clean",
     "severity_param",
+)
+
+SHIFT_SUMMARY_TABLE_COLUMNS = (
+    "baseline",
+    "category",
+    "corruption_type",
+    "severity",
+    "shifted_normal_mean",
+    "shifted_normal_median",
+    "p25",
+    "p75",
+    "shifted_normal_fpr",
+    "shifted_image_auroc",
+    "image_auroc_drop_from_clean",
+    "mean_score_shift",
+    "median_score_shift",
 )
 
 
@@ -99,6 +117,8 @@ def _build_shift_cells(augmentations: dict[str, Any]) -> list[dict[str, Any]]:
                     "severity": severity,
                     "shifted_normal_mean": item.get("mean"),
                     "shifted_normal_median": item.get("median"),
+                    "p25": item.get("p25"),
+                    "p75": item.get("p75"),
                     "shifted_normal_fpr": item.get(
                         "shifted_normal_fpr",
                         item.get("fpr_over_clean_max"),
@@ -215,18 +235,21 @@ def log_summary_to_wandb(
     import wandb  # noqa: WPS433
 
     if cells:
-        table = wandb.Table(columns=list(SHIFT_CELL_COLUMNS))
+        shift_cells_table = wandb.Table(columns=list(SHIFT_CELL_COLUMNS))
+        shift_summary_table = wandb.Table(columns=list(SHIFT_SUMMARY_TABLE_COLUMNS))
         for cell in cells:
             severity_param_raw = severity_spec_by_cell.get(
                 f"{cell['shift']}/{cell['severity']}",
                 payload.get("severity_spec", {}),
             )
             severity_param = json.dumps(severity_param_raw, ensure_ascii=True, sort_keys=True)
-            table.add_data(
+            shift_cells_table.add_data(
                 cell["shift"],
                 cell["severity"],
                 cell["shifted_normal_mean"],
                 cell["shifted_normal_median"],
+                cell["p25"],
+                cell["p75"],
                 cell["shifted_normal_fpr"],
                 cell["mean_score_shift"],
                 cell["median_score_shift"],
@@ -234,7 +257,27 @@ def log_summary_to_wandb(
                 cell["image_auroc_drop_from_clean"],
                 severity_param,
             )
-        run.log({"shift_cells": table})
+            shift_summary_table.add_data(
+                summary["baseline"],
+                summary["class_name"],
+                cell["shift"],
+                cell["severity"],
+                cell["shifted_normal_mean"],
+                cell["shifted_normal_median"],
+                cell["p25"],
+                cell["p75"],
+                cell["shifted_normal_fpr"],
+                cell["shifted_image_auroc"],
+                cell["image_auroc_drop_from_clean"],
+                cell["mean_score_shift"],
+                cell["median_score_shift"],
+            )
+        run.log(
+            {
+                "shift_cells": shift_cells_table,
+                "shift_summary_table": shift_summary_table,
+            }
+        )
 
     artifact = wandb.Artifact(
         name=f"{summary['baseline'].lower()}-{summary['class_name']}-{summary['eval_type']}",
