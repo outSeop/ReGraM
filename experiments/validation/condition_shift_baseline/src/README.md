@@ -5,7 +5,7 @@
 ## Quick Guide
 
 - `core/`
-  - PatchCore 기준 manifest 생성, shift 평가, summary 계약, 보조 검증 스크립트
+  - manifest 생성, 공통 manifest-shift helper, PatchCore 평가, summary 계약, 보조 검증 스크립트
 - `univad/`
   - UniVAD 기준 dataset 준비, smoke test, clean eval
 
@@ -20,6 +20,11 @@
   - 입력: `manifest jsonl`, `category`, raw LOCO dataset root
   - 출력: `reports/patchcore_manifest_shift/*.json`, `log.txt`
   - 역할: PatchCore shift evaluation runner
+
+- [core/manifest_shift_common.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/manifest_shift_common.py)
+  - 입력: runner CLI가 넘긴 manifest/augmentation/severity 설정
+  - 출력: 공통 run spec, summary scaffold, wandb/log helper
+  - 역할: PatchCore/UniVAD 공통 manifest-shift orchestration helper
 
 - [univad/run_smoke_colab.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/univad/run_smoke_colab.py)
   - 입력: prepared smoke dataset
@@ -37,5 +42,7 @@
   - `build_query_manifest.py`
 - PatchCore를 실제 실행하고 싶다
   - `run_patchcore_manifest_shift.py`
+- runner 공통 로직을 보고 싶다
+  - `manifest_shift_common.py`
 - notebook에서 어떤 파일이 실행되는지 알고 싶다
   - notebook의 `Runner Config` 셀과 이 문서를 같이 본다

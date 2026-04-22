@@ -33,8 +33,10 @@
   - on-the-fly augmentation manifest 생성
 - [src/core/augmentation_runtime.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/augmentation_runtime.py)
   - manifest schema와 augmentation 적용 로직
+- [src/core/manifest_shift_common.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/manifest_shift_common.py)
+  - PatchCore/UniVAD 공통 manifest-shift run spec, summary, wandb/log helper
 - [src/core/run_patchcore_manifest_shift.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/run_patchcore_manifest_shift.py)
-  - PatchCore manifest 기반 shift 평가 runner
+  - PatchCore manifest 기반 thin runner
 - [src/core/contracts.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/contracts.py)
   - summary/log 출력 계약
 
@@ -50,6 +52,8 @@
   - PatchCore identity 재현 체크
 - [src/core/render_augmentation_samples.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/render_augmentation_samples.py)
   - augmentation 샘플 panel 렌더링
+- [tests/test_manifest_shift_common.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/tests/test_manifest_shift_common.py)
+  - 공통 helper 회귀 테스트
 
 ## UniVAD Path
 
@@ -63,6 +67,8 @@ UniVAD 관련은 별도 축이다. PatchCore 흐름과 섞어 보지 않는 편�
   - Colab smoke runner
 - [src/univad/run_clean_eval.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/univad/run_clean_eval.py)
   - UniVAD clean eval summary 생성
+- [src/univad/run_manifest_shift.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/univad/run_manifest_shift.py)
+  - UniVAD manifest 기반 thin runner
 
 ## Colab / Runtime
 
@@ -120,8 +126,10 @@ UniVAD 관련은 별도 축이다. PatchCore 흐름과 섞어 보지 않는 편�
   - `src/core/build_query_manifest.py`
 - PatchCore를 돌리고 싶다
   - `src/core/run_patchcore_manifest_shift.py`
+- runner 공통화 계층을 보고 싶다
+  - `src/core/manifest_shift_common.py`
 - UniVAD를 돌리고 싶다
-  - `prepare_univad_*`, `run_univad_*`
+  - `prepare_univad_*`, `run_*`
 - Colab 런타임을 준비하고 싶다
   - `colab/*`
 - 과거 코드인지 확인하고 싶다

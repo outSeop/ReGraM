@@ -41,7 +41,7 @@ shift_protocol:
 
 evaluation:
   few_shot_k: 4
-  threshold_policy: fixed_from_clean_normal
+  threshold_policy: clean_max
   primary_metric: delta_fpr_augmented_minus_clean
   secondary_metrics:
     - mean_score_clean_normal

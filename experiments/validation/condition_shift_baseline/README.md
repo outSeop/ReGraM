@@ -124,6 +124,7 @@ top-level 공통 필드는 아래와 같다.
 - `payload`
 
 runner는 노트북 없이 CLI에서 독립 실행 가능해야 한다.
+공통 manifest 해석, summary scaffold, wandb/log 조립은 `src/core/manifest_shift_common.py`에 둔다.
 
 ## PatchCore device 정책
 
@@ -161,6 +162,7 @@ runner는 노트북 없이 CLI에서 독립 실행 가능해야 한다.
   - 최종 결론 문서
   - 세션 판단 / 확정 / 보류 상태
 - 공식 보고서 원본
+- `.env.example`에는 placeholder만 둔다. 실제 `WANDB_API_KEY`는 repo root `.env` 또는 process env에만 둔다.
 
 Markdown 보고서는 wandb 링크를 참고 링크로만 포함한다.
 
@@ -211,7 +213,7 @@ python experiments/validation/condition_shift_baseline/src/core/run_patchcore_ma
 4. baseline별 실험 설정 파일을 `configs/baseline_registry.yaml` 기준으로 분기한다.
 5. query manifest를 만든다.
 6. 결과를 `results/result_template.md` 형식으로 남긴다.
-7. threshold 기준을 `fixed_from_clean_normal` 또는 `per_run_optimized` 중 하나로 고정한다.
+7. threshold 기준을 `clean_max` 또는 `per_run_optimized` 중 하나로 고정한다.
 
 ## 우선 지표
 
