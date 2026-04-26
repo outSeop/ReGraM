@@ -100,6 +100,7 @@ python experiments/validation/condition_shift_baseline/src/univad/run_clean_eval
 - notebook은 조작판과 viewer 역할만 한다. Colab/UniVAD dependency, checkpoint, mask setup은 `src/univad/setup_runtime.py`에서 관리한다.
 - 권장 실행 순서는 `git pull` -> dataset bootstrap -> runtime setup/readiness -> runner 실행 -> dashboard다.
 - runtime setup이 `numpy`, `opencv`, `transformers`, `torchao`, `torchmetrics` 상태를 수정하면 `restart_required`를 보고 runtime을 재시작한다.
+- notebook의 UniVAD 기본 runner 옵션은 Colab T4/L4 메모리를 우선해서 `--image-size 224 --amp`로 둔다. 448 실험이 필요하면 notebook에서 `univad_extra_args`를 명시적으로 넘겨 override한다.
 - `Drive Archive Build`는 기본 실행 경로가 아니다.
 - 기존 `mvtec_loco_anomaly_detection.tar` 또는 `.tar.gz`가 있으면 다시 만들지 않는 편이 낫다.
 - 이 smoke runner는 `train/good/000`, `test/good/000`, `test/logical_anomalies/000`만 사용한다.

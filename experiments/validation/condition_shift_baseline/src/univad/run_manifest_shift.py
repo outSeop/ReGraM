@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
@@ -78,11 +80,38 @@ def pil_to_univad_inputs(image: Image.Image, transform, device: torch.device):
     return batched, image_pil_list
 
 
-def score_image(model, image: Image.Image, image_path: str, transform, device) -> float:
+def clear_cuda_cache(device: torch.device, enabled: bool) -> None:
+    if enabled and device.type == "cuda":
+        torch.cuda.empty_cache()
+
+
+def score_image(
+    model,
+    image: Image.Image,
+    image_path: str,
+    transform,
+    device: torch.device,
+    *,
+    use_amp: bool,
+    clear_cache: bool,
+) -> float:
     batched, image_pil_list = pil_to_univad_inputs(image, transform, device)
-    with torch.no_grad():
-        pred = model(batched, image_path, image_pil_list)
-    return float(pred["pred_score"].item() if torch.is_tensor(pred["pred_score"]) else pred["pred_score"])
+    amp_context = (
+        torch.autocast(device_type="cuda", dtype=torch.float16)
+        if use_amp and device.type == "cuda"
+        else contextlib.nullcontext()
+    )
+    try:
+        with torch.inference_mode(), amp_context:
+            pred = model(batched, image_path, image_pil_list)
+        pred_score = pred["pred_score"]
+        return float(pred_score.item() if torch.is_tensor(pred_score) else pred_score)
+    finally:
+        del batched
+        del image_pil_list
+        with contextlib.suppress(UnboundLocalError):
+            del pred
+        clear_cuda_cache(device, clear_cache)
 
 
 def load_reference_tensors(
@@ -119,10 +148,16 @@ def main() -> None:
     parser.add_argument("--severities", nargs="+")
     parser.add_argument("--input-root", default="data/query_normal_clean")
     parser.add_argument("--data-root", default="data/row/mvtec_loco_anomaly_detection")
-    parser.add_argument("--image-size", type=int, default=448)
+    parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--k-shot", type=int, default=1)
     parser.add_argument("--round", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--amp", action="store_true", help="Use CUDA fp16 autocast during UniVAD scoring.")
+    parser.add_argument(
+        "--disable-cuda-empty-cache",
+        action="store_true",
+        help="Do not call torch.cuda.empty_cache() between UniVAD scoring calls.",
+    )
     parser.add_argument(
         "--output",
         default="experiments/validation/condition_shift_baseline/reports/univad_manifest_shift",
@@ -163,6 +198,7 @@ def main() -> None:
     finish_phase(phase_logs, "imports", phase_started_at)
 
     device = torch.device(args.device)
+    clear_cache = not args.disable_cuda_empty_cache
     data_root = resolve_repo_path(args.data_root)
     input_root = resolve_repo_path(args.input_root)
 
@@ -196,6 +232,7 @@ def main() -> None:
         if "device" in inspect.signature(UniVAD.__init__).parameters:
             constructor_kwargs["device"] = device
         model = UniVAD(**constructor_kwargs).to(device)
+        model.eval()
         finish_phase(phase_logs, "model_build", phase_started_at)
 
         phase_started_at = time.perf_counter()
@@ -213,6 +250,7 @@ def main() -> None:
                 "image_path": reference_paths,
             }
         )
+        clear_cuda_cache(device, clear_cache)
         finish_phase(
             phase_logs,
             "setup_few_shot",
@@ -226,7 +264,17 @@ def main() -> None:
         for path in clean_paths:
             with Image.open(path) as image_obj:
                 image = image_obj.convert("RGB")
-            clean_scores.append(score_image(model, image, str(path), transform, device))
+            clean_scores.append(
+                score_image(
+                    model,
+                    image,
+                    str(path),
+                    transform,
+                    device,
+                    use_amp=args.amp,
+                    clear_cache=clear_cache,
+                )
+            )
         finish_phase(
             phase_logs,
             "score_clean_good",
@@ -240,7 +288,17 @@ def main() -> None:
         for path in anomaly_paths:
             with Image.open(path) as image_obj:
                 image = image_obj.convert("RGB")
-            anomaly_scores.append(score_image(model, image, str(path), transform, device))
+            anomaly_scores.append(
+                score_image(
+                    model,
+                    image,
+                    str(path),
+                    transform,
+                    device,
+                    use_amp=args.amp,
+                    clear_cache=clear_cache,
+                )
+            )
         finish_phase(
             phase_logs,
             "score_clean_anomaly",
@@ -277,7 +335,17 @@ def main() -> None:
                         seed=entry["seed"],
                         params=entry["params"],
                     )
-                    shifted_scores.append(score_image(model, image, str(image_path), transform, device))
+                    shifted_scores.append(
+                        score_image(
+                            model,
+                            image,
+                            str(image_path),
+                            transform,
+                            device,
+                            use_amp=args.amp,
+                            clear_cache=clear_cache,
+                        )
+                    )
 
                 summary = summarize_scores(shifted_scores, clean_threshold)
                 summary["shifted_normal_fpr"] = summary["fpr_over_clean_max"]
@@ -336,6 +404,8 @@ def main() -> None:
             "image_size": args.image_size,
             "k_shot": args.k_shot,
             "round": args.round,
+            "amp": args.amp,
+            "cuda_empty_cache": clear_cache,
         },
     )
 
