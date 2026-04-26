@@ -10,9 +10,11 @@
 4. 이미 준비된 `data/mvtec_loco_caption` / `data/mvtec_loco_caption_smoke`가 있으면 그것을 먼저 재사용한다.
 5. 준비된 dataset이 없을 때만 raw LOCO에서 `data/mvtec_loco_caption`를 만든다.
 6. `pretrained_ckpts`를 `external/UniVAD/pretrained_ckpts` 아래에 둔다.
-7. smoke subset이 없을 때만 만든다.
-8. `run_univad_smoke_colab.py`로 `good` / `logical` 2장만 먼저 돌린다.
-9. smoke가 통과하면 `run_univad_clean_eval.py`로 clean 전체 평가와 summary JSON 저장까지 끝낸다.
+7. notebook의 runtime setup/readiness 셀을 실행한다.
+8. `restart_required`가 나오면 Colab runtime을 재시작하고 처음부터 다시 실행한다.
+9. smoke subset이 없을 때만 만든다.
+10. `run_univad_smoke_colab.py`로 `good` / `logical` 2장만 먼저 돌린다.
+11. smoke가 통과하면 `run_univad_clean_eval.py` 또는 manifest runner로 평가와 summary JSON 저장까지 끝낸다.
 
 ## Minimal Commands
 
@@ -50,7 +52,7 @@ python experiments/validation/condition_shift_baseline/colab/bootstrap_runtime.p
 
 ```bash
 python experiments/validation/condition_shift_baseline/src/univad/prepare_mvtec_loco.py \
-  --src-root /content/ReGRaM/data/row/mvtec_loco_anomaly_detection \
+  --src-root /content/ReGraM/data/row/mvtec_loco_anomaly_detection \
   --dst-root data/mvtec_loco_caption
 ```
 
@@ -95,6 +97,9 @@ python experiments/validation/condition_shift_baseline/src/univad/run_clean_eval
 ## Notes
 
 - notebook 기본 동작은 `prepared dataset 재사용`이다.
+- notebook은 조작판과 viewer 역할만 한다. Colab/UniVAD dependency, checkpoint, mask setup은 `src/univad/setup_runtime.py`에서 관리한다.
+- 권장 실행 순서는 `git pull` -> dataset bootstrap -> runtime setup/readiness -> runner 실행 -> dashboard다.
+- runtime setup이 `numpy`, `opencv`, `transformers`, `torchao` 상태를 수정하면 `restart_required`를 보고 runtime을 재시작한다.
 - `Drive Archive Build`는 기본 실행 경로가 아니다.
 - 기존 `mvtec_loco_anomaly_detection.tar` 또는 `.tar.gz`가 있으면 다시 만들지 않는 편이 낫다.
 - 이 smoke runner는 `train/good/000`, `test/good/000`, `test/logical_anomalies/000`만 사용한다.

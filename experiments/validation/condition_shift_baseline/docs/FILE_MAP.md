@@ -35,6 +35,12 @@
   - manifest schema와 augmentation 적용 로직
 - [src/core/manifest_shift_common.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/manifest_shift_common.py)
   - PatchCore/UniVAD 공통 manifest-shift run spec, summary, wandb/log helper
+- [src/core/notebook_orchestration.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/notebook_orchestration.py)
+  - notebook용 설정 조립, run config 생성, 실행 queue, display helper
+- [src/core/dashboard_loader.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/dashboard_loader.py)
+  - summary JSON 로드, dashboard table/plot 렌더링
+- [src/core/manifest_paths.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/manifest_paths.py)
+  - PatchCore/UniVAD와 무관한 manifest source path 해석
 - [src/core/run_patchcore_manifest_shift.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/run_patchcore_manifest_shift.py)
   - PatchCore manifest 기반 thin runner
 - [src/core/contracts.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/contracts.py)
@@ -69,6 +75,8 @@ UniVAD 관련은 별도 축이다. PatchCore 흐름과 섞어 보지 않는 편�
   - UniVAD clean eval summary 생성
 - [src/univad/run_manifest_shift.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/univad/run_manifest_shift.py)
   - UniVAD manifest 기반 thin runner
+- [src/univad/setup_runtime.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/univad/setup_runtime.py)
+  - Colab UniVAD dependency, checkpoint, dataset, mask readiness/setup helper
 
 ## Colab / Runtime
 
