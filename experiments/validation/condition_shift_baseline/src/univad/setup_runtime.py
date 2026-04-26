@@ -77,11 +77,22 @@ def collect_missing_mask_paths(spec: dict[str, Any], categories: list[str]) -> l
         return []
     missing: list[str] = []
     for category in categories:
-        for rel_path in spec.get("required_mask_paths", []):
-            candidate = mask_root / category / rel_path
+        for image_path in collect_univad_category_image_paths(spec, category):
+            candidate = expected_univad_mask_path(
+                Path(image_path),
+                data_root=spec["data_root"],
+                mask_root=mask_root,
+                category=category,
+            )
             if not candidate.exists():
                 missing.append(str(candidate))
     return missing
+
+
+def expected_univad_mask_path(image_path: Path, *, data_root: Path, mask_root: Path, category: str) -> Path:
+    category_root = data_root / category
+    rel_path = image_path.resolve().relative_to(category_root.resolve())
+    return mask_root / category / rel_path.with_suffix("") / "grounding_mask.png"
 
 
 def evaluate_baseline_readiness(
@@ -137,9 +148,12 @@ def evaluate_baseline_readiness(
         if not data_ready:
             blockers.append("dataset_missing:" + ",".join(Path(path).name for path in missing_data_paths[:4]))
         if not masks_ready:
+            missing_preview = [str(Path(path)) for path in missing_mask_paths[:4]]
+            missing_suffix = f"+{len(missing_mask_paths) - 4} more" if len(missing_mask_paths) > 4 else ""
             blockers.append(
                 "grounding_masks_missing:"
-                + ",".join(Path(path).parts[-4] + "/" + Path(path).parts[-3] for path in missing_mask_paths[:4])
+                + ",".join(missing_preview)
+                + (f",{missing_suffix}" if missing_suffix else "")
             )
         if spec.get("requires_checkpoints") and not checkpoint_ready:
             blockers.append("checkpoint_missing:" + ",".join(missing_checkpoint_files))
@@ -163,7 +177,12 @@ def evaluate_baseline_readiness(
                 "missing_data_paths": ", ".join(missing_data_paths) if missing_data_paths else "-",
                 "mask_root": str(spec.get("mask_root", "")),
                 "masks_ready": masks_ready,
-                "missing_mask_paths": ", ".join(missing_mask_paths) if missing_mask_paths else "-",
+                "missing_mask_paths": (
+                    ", ".join(missing_mask_paths[:10])
+                    + (f" ... +{len(missing_mask_paths) - 10} more" if len(missing_mask_paths) > 10 else "")
+                    if missing_mask_paths
+                    else "-"
+                ),
                 "required_python_modules": ", ".join(spec.get("required_python_modules", [])) or "-",
                 "python_modules_ready": python_modules_ready,
                 "ready": ready,
@@ -235,17 +254,29 @@ def build_mask_status_rows(spec: dict[str, Any], categories: list[str]) -> list[
         return []
     rows: list[dict[str, Any]] = []
     for category in categories:
-        for rel_path in spec.get("required_mask_paths", []):
-            candidate = mask_root / category / rel_path
-            rows.append(
-                {
-                    "baseline": "UniVAD",
-                    "category": category,
-                    "required_mask_path": str(candidate),
-                    "exists": candidate.exists(),
-                    "path": str(candidate),
-                }
+        image_paths = collect_univad_category_image_paths(spec, category)
+        expected_paths = [
+            expected_univad_mask_path(
+                Path(image_path),
+                data_root=spec["data_root"],
+                mask_root=mask_root,
+                category=category,
             )
+            for image_path in image_paths
+        ]
+        missing_paths = [path for path in expected_paths if not path.exists()]
+        rows.append(
+            {
+                "baseline": "UniVAD",
+                "category": category,
+                "image_count": len(image_paths),
+                "mask_count": len(expected_paths) - len(missing_paths),
+                "missing_mask_count": len(missing_paths),
+                "sample_missing_mask_path": str(missing_paths[0]) if missing_paths else "-",
+                "mask_root": str(mask_root / category),
+                "exists": len(missing_paths) == 0,
+            }
+        )
     return rows
 
 
@@ -760,6 +791,12 @@ def setup_univad(
     missing_checkpoint_files = collect_missing_checkpoint_files(spec)
     missing_data_paths = collect_missing_data_paths(spec, categories)
     missing_mask_paths = collect_missing_mask_paths(spec, categories)
+    missing_mask_paths_display = (
+        ", ".join(missing_mask_paths[:10])
+        + (f" ... +{len(missing_mask_paths) - 10} more" if len(missing_mask_paths) > 10 else "")
+        if missing_mask_paths
+        else "-"
+    )
     return {
         "baseline": "UniVAD",
         "external_dir": str(univad_dir),
@@ -782,7 +819,7 @@ def setup_univad(
         "downloaded_checkpoint_files": ", ".join(downloaded_checkpoint_files) if downloaded_checkpoint_files else "-",
         "missing_checkpoint_files": ", ".join(missing_checkpoint_files) if missing_checkpoint_files else "-",
         "missing_data_paths": ", ".join(missing_data_paths) if missing_data_paths else "-",
-        "missing_mask_paths": ", ".join(missing_mask_paths) if missing_mask_paths else "-",
+        "missing_mask_paths": missing_mask_paths_display,
         "setup_status": "ready" if mask_status["error"] == "-" else "partial",
         "note": requirement_note,
     }

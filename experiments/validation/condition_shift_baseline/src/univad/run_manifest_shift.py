@@ -165,16 +165,20 @@ def score_image(
         )
 
 
-def load_reference_tensors(
-    train_good_dir: Path, *, k_shot: int, round_idx: int, transform, device
-) -> tuple[torch.Tensor, list[str]]:
+def select_reference_paths(train_good_dir: Path, *, k_shot: int, round_idx: int) -> list[Path]:
     paths = sorted(train_good_dir.glob("*.png"))
     if len(paths) < round_idx + k_shot:
         raise RuntimeError(
             f"Not enough train/good images in {train_good_dir} for k_shot={k_shot}, round={round_idx}. "
             f"Available={len(paths)}."
         )
-    selected = paths[round_idx : round_idx + k_shot]
+    return paths[round_idx : round_idx + k_shot]
+
+
+def load_reference_tensors(
+    train_good_dir: Path, *, k_shot: int, round_idx: int, transform, device
+) -> tuple[torch.Tensor, list[str]]:
+    selected = select_reference_paths(train_good_dir, k_shot=k_shot, round_idx=round_idx)
     tensors = torch.cat(
         [transform(Image.open(path).convert("RGB")).unsqueeze(0) for path in selected],
         dim=0,
@@ -188,6 +192,63 @@ def compute_image_auroc(normal_scores: list[float], anomaly_scores: list[float])
     labels = [0] * len(normal_scores) + [1] * len(anomaly_scores)
     scores = normal_scores + anomaly_scores
     return float(roc_auc_score(labels, scores) * 100.0)
+
+
+def univad_data_path_for_image(image_path: Path, *, data_root: Path, category: str) -> Path:
+    category_root = data_root / category
+    with contextlib.suppress(ValueError):
+        image_path.resolve().relative_to(category_root.resolve())
+        return image_path
+    parts = list(image_path.parts)
+    if category in parts:
+        category_index = len(parts) - 1 - parts[::-1].index(category)
+        rel_path = Path(*parts[category_index + 1 :])
+        return category_root / rel_path
+    return image_path
+
+
+def expected_mask_path_for_image(image_path: Path, *, data_root: Path, mask_root: Path, category: str) -> Path:
+    data_image_path = univad_data_path_for_image(image_path, data_root=data_root, category=category)
+    rel_path = data_image_path.resolve().relative_to((data_root / category).resolve())
+    return mask_root / category / rel_path.with_suffix("") / "grounding_mask.png"
+
+
+def collect_manifest_source_paths(run_spec) -> list[Path]:
+    paths: list[Path] = []
+    for severity_groups in run_spec.grouped_entries.values():
+        for entries in severity_groups.values():
+            paths.extend(resolve_manifest_image_path(entry) for entry in entries)
+    return paths
+
+
+def assert_required_grounding_masks_exist(
+    *,
+    data_root: Path,
+    mask_root: Path,
+    category: str,
+    image_paths: list[Path],
+) -> None:
+    expected_paths: dict[Path, Path] = {}
+    for image_path in image_paths:
+        try:
+            expected_paths[image_path] = expected_mask_path_for_image(
+                image_path,
+                data_root=data_root,
+                mask_root=mask_root,
+                category=category,
+            )
+        except ValueError:
+            continue
+    missing = [mask_path for mask_path in expected_paths.values() if not mask_path.exists()]
+    if not missing:
+        return
+    preview = "\n".join(str(path) for path in missing[:10])
+    more = f"\n... +{len(missing) - 10} more" if len(missing) > 10 else ""
+    raise RuntimeError(
+        "UniVAD grounding masks are incomplete for this run. "
+        "Run the notebook setup/readiness cell to generate masks for all category images before scoring.\n"
+        f"missing_count={len(missing)}\n{preview}{more}"
+    )
 
 
 def main() -> None:
@@ -274,6 +335,38 @@ def main() -> None:
     clean_good_dir = data_root / args.category / "test" / "good"
     logical_dir = data_root / args.category / "test" / "logical_anomalies"
     structural_dir = data_root / args.category / "test" / "structural_anomalies"
+    clean_paths = sorted(clean_good_dir.glob("*.png"))
+    anomaly_paths = sorted(logical_dir.glob("*.png")) + sorted(structural_dir.glob("*.png"))
+    reference_paths_for_masks = select_reference_paths(
+        train_good_dir,
+        k_shot=args.k_shot,
+        round_idx=args.round,
+    )
+    required_image_paths = list(
+        dict.fromkeys(
+            [
+                *reference_paths_for_masks,
+                *clean_paths,
+                *anomaly_paths,
+                *collect_manifest_source_paths(run_spec),
+            ]
+        )
+    )
+    mask_root = univad_root / "masks" / "mvtec_loco_caption"
+
+    phase_started_at = time.perf_counter()
+    assert_required_grounding_masks_exist(
+        data_root=data_root,
+        mask_root=mask_root,
+        category=args.category,
+        image_paths=required_image_paths,
+    )
+    finish_phase(
+        phase_logs,
+        "mask_preflight",
+        phase_started_at,
+        extra=f"required_images={len(required_image_paths)} | mask_root={mask_root}",
+    )
 
     preview_images: dict[str, list[dict[str, object]]] = {}
 
@@ -310,7 +403,6 @@ def main() -> None:
         )
 
         phase_started_at = time.perf_counter()
-        clean_paths = sorted(clean_good_dir.glob("*.png"))
         clean_scores: list[float] = []
         for path in clean_paths:
             with Image.open(path) as image_obj:
@@ -335,7 +427,6 @@ def main() -> None:
         )
 
         phase_started_at = time.perf_counter()
-        anomaly_paths = sorted(logical_dir.glob("*.png")) + sorted(structural_dir.glob("*.png"))
         anomaly_scores: list[float] = []
         for path in anomaly_paths:
             with Image.open(path) as image_obj:
@@ -388,11 +479,16 @@ def main() -> None:
                         seed=entry["seed"],
                         params=entry["params"],
                     )
+                    model_image_path = univad_data_path_for_image(
+                        image_path,
+                        data_root=data_root,
+                        category=args.category,
+                    )
                     shifted_scores.append(
                         score_image(
                             model,
                             image,
-                            str(image_path),
+                            str(model_image_path),
                             transform,
                             device,
                             image_size=args.image_size,
