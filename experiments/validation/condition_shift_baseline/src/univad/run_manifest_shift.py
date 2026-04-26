@@ -13,6 +13,7 @@ from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+import numpy as np
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
@@ -73,10 +74,11 @@ def build_transform(image_size: int):
     )
 
 
-def pil_to_univad_inputs(image: Image.Image, transform, device: torch.device):
+def pil_to_univad_inputs(image: Image.Image, *, image_size: int, transform, device: torch.device):
     tensor = transform(image)
     batched = tensor.unsqueeze(0).to(device)
-    image_pil_list = [tensor.cpu().numpy()]
+    resized = image.resize((image_size, image_size), resample=Image.Resampling.BILINEAR)
+    image_pil_list = [np.asarray(resized.convert("RGB"), dtype=np.uint8)]
     return batched, image_pil_list
 
 
@@ -97,10 +99,16 @@ def score_image_once(
     transform,
     device: torch.device,
     *,
+    image_size: int,
     use_amp: bool,
     clear_cache: bool,
 ) -> float:
-    batched, image_pil_list = pil_to_univad_inputs(image, transform, device)
+    batched, image_pil_list = pil_to_univad_inputs(
+        image,
+        image_size=image_size,
+        transform=transform,
+        device=device,
+    )
     amp_context = (
         torch.autocast(device_type="cuda", dtype=torch.float16)
         if use_amp and device.type == "cuda"
@@ -126,6 +134,7 @@ def score_image(
     transform,
     device: torch.device,
     *,
+    image_size: int,
     use_amp: bool,
     clear_cache: bool,
 ) -> float:
@@ -136,6 +145,7 @@ def score_image(
             image_path,
             transform,
             device,
+            image_size=image_size,
             use_amp=use_amp,
             clear_cache=clear_cache,
         )
@@ -149,6 +159,7 @@ def score_image(
             image_path,
             transform,
             device,
+            image_size=image_size,
             use_amp=False,
             clear_cache=clear_cache,
         )
@@ -311,6 +322,7 @@ def main() -> None:
                     str(path),
                     transform,
                     device,
+                    image_size=args.image_size,
                     use_amp=args.amp,
                     clear_cache=clear_cache,
                 )
@@ -335,6 +347,7 @@ def main() -> None:
                     str(path),
                     transform,
                     device,
+                    image_size=args.image_size,
                     use_amp=args.amp,
                     clear_cache=clear_cache,
                 )
@@ -382,6 +395,7 @@ def main() -> None:
                             str(image_path),
                             transform,
                             device,
+                            image_size=args.image_size,
                             use_amp=args.amp,
                             clear_cache=clear_cache,
                         )
