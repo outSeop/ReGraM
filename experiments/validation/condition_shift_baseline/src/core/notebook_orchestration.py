@@ -263,7 +263,7 @@ def build_baseline_specs(
             "wandb_group": "univad",
             "wandb_log_images": True,
             "wandb_max_images": 2,
-            "extra_args": univad_extra_args or ["--image-size", "224", "--k-shot", "1", "--round", "0", "--amp"],
+            "extra_args": univad_extra_args or ["--image-size", "224", "--k-shot", "1", "--round", "0"],
             "notes": (
                 "UniVAD needs CUDA, recursive clone/submodules, MVTec-Caption style LOCO data, "
                 "precomputed grounding masks, editable GroundingDINO, and local checkpoints."

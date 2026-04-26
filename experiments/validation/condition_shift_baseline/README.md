@@ -75,7 +75,7 @@ baseline 조사와 코드 출처는 [docs/baseline_survey.md](/Users/song-inseop
   - thin orchestrator
   - 환경 확인, 경로 확인, Python runner 호출, `summary.json` 로드, 간단 표/시각화만 담당
   - 긴 helper 구현은 보관하지 않고 `src/core/notebook_orchestration.py`, `src/core/dashboard_loader.py`, `src/univad/setup_runtime.py`를 호출한다
-  - Colab 메모리 안정성을 위해 UniVAD manifest shift 기본값은 `--image-size 224 --amp`로 둔다
+  - Colab 메모리 안정성을 위해 UniVAD manifest shift 기본값은 `--image-size 224`로 둔다
 - `Python`
   - 실험 로직, 전처리, clean eval, corruption eval, summary 생성의 단일 책임 담당
 - `Git`

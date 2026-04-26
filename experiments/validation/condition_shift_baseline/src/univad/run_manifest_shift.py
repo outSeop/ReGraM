@@ -85,7 +85,12 @@ def clear_cuda_cache(device: torch.device, enabled: bool) -> None:
         torch.cuda.empty_cache()
 
 
-def score_image(
+def amp_unsupported_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return "not implemented for 'Half'" in message or "not implemented for Half" in message
+
+
+def score_image_once(
     model,
     image: Image.Image,
     image_path: str,
@@ -112,6 +117,41 @@ def score_image(
         with contextlib.suppress(UnboundLocalError):
             del pred
         clear_cuda_cache(device, clear_cache)
+
+
+def score_image(
+    model,
+    image: Image.Image,
+    image_path: str,
+    transform,
+    device: torch.device,
+    *,
+    use_amp: bool,
+    clear_cache: bool,
+) -> float:
+    try:
+        return score_image_once(
+            model,
+            image,
+            image_path,
+            transform,
+            device,
+            use_amp=use_amp,
+            clear_cache=clear_cache,
+        )
+    except RuntimeError as exc:
+        if not use_amp or not amp_unsupported_error(exc):
+            raise
+        clear_cuda_cache(device, clear_cache)
+        return score_image_once(
+            model,
+            image,
+            image_path,
+            transform,
+            device,
+            use_amp=False,
+            clear_cache=clear_cache,
+        )
 
 
 def load_reference_tensors(
