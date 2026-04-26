@@ -197,7 +197,7 @@ def compute_image_auroc(normal_scores: list[float], anomaly_scores: list[float])
 def univad_data_path_for_image(image_path: Path, *, data_root: Path, category: str) -> Path:
     category_root = data_root / category
     with contextlib.suppress(ValueError):
-        image_path.resolve().relative_to(category_root.resolve())
+        image_path.relative_to(category_root)
         return image_path
     parts = list(image_path.parts)
     if category in parts:
@@ -209,7 +209,7 @@ def univad_data_path_for_image(image_path: Path, *, data_root: Path, category: s
 
 def expected_mask_path_for_image(image_path: Path, *, data_root: Path, mask_root: Path, category: str) -> Path:
     data_image_path = univad_data_path_for_image(image_path, data_root=data_root, category=category)
-    rel_path = data_image_path.resolve().relative_to((data_root / category).resolve())
+    rel_path = data_image_path.relative_to(data_root / category)
     return mask_root / category / rel_path.with_suffix("") / "grounding_mask.png"
 
 

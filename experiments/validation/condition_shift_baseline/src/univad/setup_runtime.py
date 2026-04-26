@@ -91,7 +91,14 @@ def collect_missing_mask_paths(spec: dict[str, Any], categories: list[str]) -> l
 
 def expected_univad_mask_path(image_path: Path, *, data_root: Path, mask_root: Path, category: str) -> Path:
     category_root = data_root / category
-    rel_path = image_path.resolve().relative_to(category_root.resolve())
+    try:
+        rel_path = image_path.relative_to(category_root)
+    except ValueError:
+        parts = list(image_path.parts)
+        if category not in parts:
+            raise
+        category_index = len(parts) - 1 - parts[::-1].index(category)
+        rel_path = Path(*parts[category_index + 1 :])
     return mask_root / category / rel_path.with_suffix("") / "grounding_mask.png"
 
 
