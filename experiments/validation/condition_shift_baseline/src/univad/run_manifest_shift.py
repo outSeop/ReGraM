@@ -43,7 +43,7 @@ from manifest_shift_common import (
     summarize_scores,
     write_manifest_shift_summary,
 )
-from patchcore_datasets import resolve_manifest_image_path
+from manifest_paths import resolve_manifest_image_path
 from preview_utils import build_preview_images
 from repo_paths import REPO_ROOT, finish_phase, log_phase, now_kst_string
 

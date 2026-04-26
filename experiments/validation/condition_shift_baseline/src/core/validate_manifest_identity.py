@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 
 from augmentation_runtime import apply_augmentation, load_manifest
-from patchcore_datasets import resolve_manifest_image_path
+from manifest_paths import resolve_manifest_image_path
 from repo_paths import REPO_ROOT
 
 

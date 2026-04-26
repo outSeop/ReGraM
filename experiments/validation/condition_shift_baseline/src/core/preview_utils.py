@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image
 
 from augmentation_runtime import apply_augmentation
-from patchcore_datasets import resolve_manifest_image_path
+from manifest_paths import resolve_manifest_image_path
 
 
 def build_preview_panel(entry: dict, image_path: Path) -> Image.Image:

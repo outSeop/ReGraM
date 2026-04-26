@@ -255,7 +255,7 @@ def build_shift_sample_rows(
     clean_good_mean: float,
     max_items: int = DEFAULT_GALLERY_SAMPLE_LIMIT,
 ) -> list[dict[str, Any]]:
-    from patchcore_datasets import resolve_manifest_image_path  # noqa: WPS433
+    from manifest_paths import resolve_manifest_image_path  # noqa: WPS433
 
     rows: list[dict[str, Any]] = []
     for entry, score in list(zip(entries, scores, strict=False))[:max_items]:

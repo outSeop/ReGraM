@@ -9,11 +9,12 @@ from PIL import Image
 from torchvision import transforms
 
 from augmentation_runtime import apply_augmentation, load_manifest
-from patchcore_factory import get_patchcore
-from repo_paths import REPO_ROOT
+from manifest_paths import resolve_manifest_image_path
 
 
 def _build_transform(resize: int, imagesize: int):
+    from patchcore_factory import get_patchcore  # noqa: WPS433
+
     ns = get_patchcore()
     return transforms.Compose(
         [
@@ -23,16 +24,6 @@ def _build_transform(resize: int, imagesize: int):
             transforms.Normalize(mean=ns.IMAGENET_MEAN, std=ns.IMAGENET_STD),
         ]
     )
-
-
-def resolve_manifest_image_path(entry: dict) -> Path:
-    source_path = Path(entry["source_path"])
-    path_mode = entry.get("source_path_mode", "absolute")
-    if source_path.is_absolute():
-        return source_path
-    if path_mode == "repo_relative":
-        return REPO_ROOT / source_path
-    return source_path.resolve()
 
 
 def load_category_entries(manifest_path: Path, category: str) -> list[dict]:
