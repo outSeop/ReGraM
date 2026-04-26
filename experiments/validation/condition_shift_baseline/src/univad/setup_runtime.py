@@ -16,7 +16,14 @@ import pandas as pd
 from notebook_orchestration import ensure_importable_path, module_available
 
 
-UNIVAD_RUNTIME_DEPENDENCIES = ["addict", "yapf", "pycocotools", "supervision", "timm"]
+UNIVAD_RUNTIME_DEPENDENCIES = [
+    "addict",
+    "yapf",
+    "pycocotools",
+    "supervision",
+    "timm",
+    "torchmetrics",
+]
 UNIVAD_NUMPY_VERSION = "1.26.4"
 UNIVAD_OPENCV_VERSION = "4.11.0.86"
 UNIVAD_TRANSFORMERS_VERSION = "4.45.2"

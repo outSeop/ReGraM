@@ -239,7 +239,7 @@ def build_baseline_specs(
             "device": "cuda",
             "requires_cuda": True,
             "requires_checkpoints": True,
-            "required_python_modules": ["groundingdino"],
+            "required_python_modules": ["groundingdino", "torchmetrics"],
             "import_search_paths": [repo_root / "external" / "UniVAD" / "models" / "GroundingDINO"],
             "required_local_paths": [
                 repo_root / "external" / "UniVAD" / "models" / "dinov2" / "hubconf.py"
