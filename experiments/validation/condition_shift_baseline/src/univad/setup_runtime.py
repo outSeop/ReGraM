@@ -24,6 +24,14 @@ UNIVAD_RUNTIME_DEPENDENCIES = [
     "timm",
     "torchmetrics",
 ]
+UNIVAD_RUNTIME_DEPENDENCY_SPECS = [
+    "addict==2.4.0",
+    "yapf==0.40.2",
+    "pycocotools==2.0.8",
+    "supervision",
+    "timm==1.0.9",
+    "torchmetrics",
+]
 UNIVAD_NUMPY_VERSION = "1.26.4"
 UNIVAD_OPENCV_VERSION = "4.11.0.86"
 UNIVAD_TRANSFORMERS_VERSION = "4.45.2"
@@ -318,6 +326,27 @@ def ensure_symlink(src: Path, dst: Path) -> None:
     dst.symlink_to(src.resolve())
 
 
+def run_pip_command(args: list[str]) -> subprocess.CompletedProcess[str]:
+    print(f"run pip: {' '.join(args)}")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", *args],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(result.stdout)
+    return result
+
+
+def summarize_command_failure(result: subprocess.CompletedProcess[str]) -> str:
+    output_lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    output_tail = " | ".join(output_lines[-8:]) if output_lines else "no pip output captured"
+    command = " ".join(str(part) for part in result.args)
+    return f"command failed with exit code {result.returncode}: {command}; {output_tail}"
+
+
 @contextlib.contextmanager
 def working_directory(path: Path):
     previous_cwd = Path.cwd()
@@ -388,20 +417,20 @@ def maybe_fix_univad_torch_stack(settings: dict[str, Any]) -> dict[str, Any]:
     if status["ready"] or not settings["auto_fix_univad_torch_stack"]:
         return status
     print("install compatible torch stack for UniVAD")
-    subprocess.run(
+    result = run_pip_command(
         [
-            sys.executable,
-            "-m",
-            "pip",
             "install",
             "--upgrade",
             "--no-cache-dir",
             f"torch=={UNIVAD_TORCH_VERSION}",
             f"torchvision=={UNIVAD_TORCHVISION_VERSION}",
             f"torchaudio=={UNIVAD_TORCHAUDIO_VERSION}",
-        ],
-        check=True,
+        ]
     )
+    if result.returncode != 0:
+        status["error"] = summarize_command_failure(result)
+        status["note"] = "UniVAD torch stack install failed; fix the pip error above and rerun setup"
+        return status
     status["restart_required"] = True
     status["note"] = "installed compatible torch stack; restart runtime and rerun notebook from the top"
     return status
@@ -466,24 +495,33 @@ def maybe_fix_univad_runtime_dependency_stack(settings: dict[str, Any]) -> dict[
     if status["ready"] or not settings["auto_fix_univad_runtime_deps"]:
         return status
     print("install compatible UniVAD runtime dependency stack")
-    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "torchao", "torchao-nightly"], check=False)
-    subprocess.run(
+    run_pip_command(["uninstall", "-y", "torchao", "torchao-nightly"])
+    run_pip_command(
         [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--upgrade",
-            "--no-cache-dir",
-            f"numpy=={UNIVAD_NUMPY_VERSION}",
-            f"opencv-python=={UNIVAD_OPENCV_VERSION}",
-            f"opencv-python-headless=={UNIVAD_OPENCV_VERSION}",
-            *UNIVAD_RUNTIME_DEPENDENCIES,
-        ],
-        check=True,
+            "uninstall",
+            "-y",
+            "opencv-python",
+            "opencv-python-headless",
+            "opencv-contrib-python",
+            "opencv-contrib-python-headless",
+        ]
     )
+    install_steps = [
+        ["install", "--upgrade", "--no-cache-dir", f"numpy=={UNIVAD_NUMPY_VERSION}"],
+        ["install", "--upgrade", "--no-cache-dir", f"opencv-python-headless=={UNIVAD_OPENCV_VERSION}"],
+        ["install", "--upgrade", "--no-cache-dir", *UNIVAD_RUNTIME_DEPENDENCY_SPECS],
+    ]
+    for install_args in install_steps:
+        result = run_pip_command(install_args)
+        if result.returncode != 0:
+            status["error"] = summarize_command_failure(result)
+            status["note"] = "UniVAD runtime dependency install failed; fix the pip error above and rerun setup"
+            return status
     status["restart_required"] = True
-    status["note"] = "installed compatible UniVAD runtime deps; restart runtime and rerun notebook from the top"
+    status["note"] = (
+        "installed compatible UniVAD runtime deps with headless OpenCV; "
+        "restart runtime and rerun notebook from the top"
+    )
     return status
 
 
@@ -520,18 +558,18 @@ def maybe_fix_univad_transformers_stack(settings: dict[str, Any]) -> dict[str, A
     if status["ready"] or not settings["auto_fix_univad_transformers_stack"]:
         return status
     print("install compatible transformers stack for UniVAD/GroundingDINO")
-    subprocess.run(
+    result = run_pip_command(
         [
-            sys.executable,
-            "-m",
-            "pip",
             "install",
             "--upgrade",
             "--no-cache-dir",
             f"transformers=={UNIVAD_TRANSFORMERS_VERSION}",
-        ],
-        check=True,
+        ]
     )
+    if result.returncode != 0:
+        status["error"] = summarize_command_failure(result)
+        status["note"] = "UniVAD transformers stack install failed; fix the pip error above and rerun setup"
+        return status
     status["restart_required"] = True
     status["note"] = "installed compatible transformers stack; restart runtime and rerun notebook from the top"
     return status
@@ -765,12 +803,13 @@ def setup_univad(
         spec, raw_loco_root=raw_loco_root, settings=settings
     )
 
-    checks = [
-        (maybe_fix_univad_runtime_dependency_stack(settings), "runtime_dependency_unavailable"),
-        (maybe_fix_univad_torch_stack(settings), "torch_stack_unavailable"),
-        (maybe_fix_univad_transformers_stack(settings), "transformers_stack_unavailable"),
+    dependency_checks = [
+        (maybe_fix_univad_runtime_dependency_stack, "runtime_dependency_unavailable"),
+        (maybe_fix_univad_torch_stack, "torch_stack_unavailable"),
+        (maybe_fix_univad_transformers_stack, "transformers_stack_unavailable"),
     ]
-    for status, unavailable_reason in checks:
+    for check_dependency_stack, unavailable_reason in dependency_checks:
+        status = check_dependency_stack(settings)
         blocked_row = _blocked_from_status(
             status,
             spec,
