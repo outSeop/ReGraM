@@ -131,6 +131,25 @@ def cuda_autocast_context(device: torch.device, enabled: bool):
     return contextlib.nullcontext()
 
 
+def patch_univad_dense_crf_float32() -> bool:
+    univad_module = sys.modules.get("UniVAD")
+    original_dense_crf = getattr(univad_module, "dense_crf", None) if univad_module is not None else None
+    if original_dense_crf is None or getattr(original_dense_crf, "_regram_float32_patch", False):
+        return False
+
+    def dense_crf_float32(image_tensor, output_logits):
+        if torch.is_tensor(image_tensor):
+            image_tensor = image_tensor.float()
+        if torch.is_tensor(output_logits):
+            output_logits = output_logits.float()
+        return original_dense_crf(image_tensor, output_logits)
+
+    dense_crf_float32._regram_float32_patch = True
+    univad_module.dense_crf = dense_crf_float32
+    print("patch UniVAD dense_crf inputs to fp32")
+    return True
+
+
 def amp_unsupported_error(exc: RuntimeError) -> bool:
     message = str(exc)
     return "not implemented for 'Half'" in message or "not implemented for Half" in message
@@ -352,7 +371,8 @@ def main() -> None:
     univad_root = ensure_external_on_path("univad")
     from UniVAD import UniVAD  # noqa: WPS433
 
-    finish_phase(phase_logs, "imports", phase_started_at)
+    patched_dense_crf = patch_univad_dense_crf_float32()
+    finish_phase(phase_logs, "imports", phase_started_at, extra=f"patched_dense_crf={patched_dense_crf}")
 
     device = torch.device(args.device)
     clear_cache = not args.disable_cuda_empty_cache
@@ -615,6 +635,7 @@ def main() -> None:
             "amp": effective_amp,
             "requested_amp": args.amp,
             "low_memory_backbone": low_memory_backbone,
+            "patched_dense_crf": patched_dense_crf,
             "cuda_empty_cache": clear_cache,
         },
     )
