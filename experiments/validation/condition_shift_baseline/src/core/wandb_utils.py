@@ -89,11 +89,12 @@ def init_wandb_run(
     if api_key:
         wandb.login(key=api_key, relogin=True)
     elif mode == "online":
-        print(
-            "WANDB_API_KEY is not set; falling back to wandb offline mode. "
-            f"Set WANDB_API_KEY in the environment or {REPO_ROOT / '.env'} to sync online."
+        raise RuntimeError(
+            "WANDB_API_KEY is not set and --wandb-mode=online. "
+            "Set it in the process env or add WANDB_API_KEY=... to "
+            f"{REPO_ROOT / '.env'} (see .env.example). "
+            "W&B logging will be skipped by runners that guard optional tracking."
         )
-        mode = "offline"
 
     return wandb.init(
         project=project,

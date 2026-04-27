@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 
 import numpy as np
@@ -247,29 +248,37 @@ def main() -> None:
     )
 
     phase_started_at = time.perf_counter()
-    wandb_run = init_manifest_shift_wandb_run(
-        enabled=args.use_wandb and args.wandb_mode != "disabled",
-        project=args.wandb_project,
-        entity=args.wandb_entity,
-        group=args.wandb_group,
-        mode=args.wandb_mode,
-        baseline="PatchCore",
-        dataset="mvtec_loco",
-        class_name=args.category,
-        eval_type="manifest_shift",
-        run_name=build_run_name("patchcore", args.category, run_spec.output_suffix),
-        config={
-            **common_run_config,
-            "summary_path": str(output_paths.output_path),
-            "log_path": str(output_paths.log_path),
-        },
-        run_spec=run_spec,
-    )
+    wandb_error = "-"
+    if args.use_wandb and args.wandb_mode == "online" and not os.environ.get("WANDB_API_KEY"):
+        print("warning: WANDB_API_KEY is not set; W&B online init may be skipped.")
+    try:
+        wandb_run = init_manifest_shift_wandb_run(
+            enabled=args.use_wandb and args.wandb_mode != "disabled",
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            group=args.wandb_group,
+            mode=args.wandb_mode,
+            baseline="PatchCore",
+            dataset="mvtec_loco",
+            class_name=args.category,
+            eval_type="manifest_shift",
+            run_name=build_run_name("patchcore", args.category, run_spec.output_suffix),
+            config={
+                **common_run_config,
+                "summary_path": str(output_paths.output_path),
+                "log_path": str(output_paths.log_path),
+            },
+            run_spec=run_spec,
+        )
+    except Exception as exc:  # noqa: BLE001
+        wandb_run = None
+        wandb_error = f"{type(exc).__name__}: {exc}"
+        print(f"warning: W&B init failed; continuing without W&B. {wandb_error}")
     finish_phase(
         phase_logs,
         "wandb_init",
         phase_started_at,
-        extra=f"enabled={bool(wandb_run is not None)}",
+        extra=f"enabled={bool(wandb_run is not None)} | error={wandb_error}",
     )
 
     phase_started_at = time.perf_counter()
@@ -299,13 +308,17 @@ def main() -> None:
     finish_phase(phase_logs, "write_outputs", phase_started_at, extra=f"summary={output_paths.output_path.name}")
 
     phase_started_at = time.perf_counter()
-    finalize_manifest_shift_tracking(
-        wandb_run,
-        summary=summary,
-        output_paths=output_paths,
-        preview_images=preview_images,
-    )
-    finish_phase(phase_logs, "wandb_finalize", phase_started_at)
+    try:
+        finalize_manifest_shift_tracking(
+            wandb_run,
+            summary=summary,
+            output_paths=output_paths,
+            preview_images=preview_images,
+        )
+    except Exception as exc:  # noqa: BLE001
+        wandb_error = f"{type(exc).__name__}: {exc}"
+        print(f"warning: W&B finalize failed; outputs are still saved locally. {wandb_error}")
+    finish_phase(phase_logs, "wandb_finalize", phase_started_at, extra=f"error={wandb_error}")
 
     finish_phase(phase_logs, "run", run_started_at, extra=f"output={output_paths.output_path.name}")
     write_log(
