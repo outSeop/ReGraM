@@ -88,8 +88,15 @@ def clear_cuda_cache(device: torch.device, enabled: bool) -> None:
 
 
 @contextlib.contextmanager
-def half_precision_dinov2_hub_load(enabled: bool):
+def low_memory_univad_model_load(enabled: bool):
     original_load = torch.hub.load
+    univad_module = sys.modules.get("UniVAD")
+    open_clip_module = getattr(univad_module, "open_clip", None)
+    original_create_model_and_transforms = (
+        getattr(open_clip_module, "create_model_and_transforms", None)
+        if open_clip_module is not None
+        else None
+    )
 
     if not enabled:
         yield
@@ -102,11 +109,20 @@ def half_precision_dinov2_hub_load(enabled: bool):
             return loaded_model.half()
         return loaded_model
 
+    def patched_create_model_and_transforms(*args, **kwargs):
+        model, preprocess_train, preprocess_val = original_create_model_and_transforms(*args, **kwargs)
+        print("load CLIP backbone in fp16 for low-memory CUDA runtime")
+        return model.half(), preprocess_train, preprocess_val
+
     torch.hub.load = patched_load
+    if open_clip_module is not None and original_create_model_and_transforms is not None:
+        open_clip_module.create_model_and_transforms = patched_create_model_and_transforms
     try:
         yield
     finally:
         torch.hub.load = original_load
+        if open_clip_module is not None and original_create_model_and_transforms is not None:
+            open_clip_module.create_model_and_transforms = original_create_model_and_transforms
 
 
 def cuda_autocast_context(device: torch.device, enabled: bool):
@@ -408,7 +424,7 @@ def main() -> None:
         constructor_accepts_device = "device" in inspect.signature(UniVAD.__init__).parameters
         if constructor_accepts_device:
             constructor_kwargs["device"] = device
-        with half_precision_dinov2_hub_load(low_memory_backbone):
+        with low_memory_univad_model_load(low_memory_backbone), cuda_autocast_context(device, effective_amp):
             model = UniVAD(**constructor_kwargs)
         if not constructor_accepts_device:
             model = model.to(device)
