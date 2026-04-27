@@ -710,6 +710,7 @@ def build_univad_setup_blocked_row(
     checkpoint_root: Path,
     missing_local_paths: list[str],
     caption_dataset_prepared: bool,
+    downloaded_checkpoint_files: list[str],
     setup_status: str,
     mask_generation_reason: str,
     mask_generation_error: str,
@@ -733,8 +734,8 @@ def build_univad_setup_blocked_row(
         "mask_generation_categories": "-",
         "patched_component_segmentation": False,
         "download_missing_checkpoints": settings["download_missing_univad_checkpoints"],
-        "downloaded_checkpoint_files": "-",
-        "missing_checkpoint_files": "-",
+        "downloaded_checkpoint_files": ", ".join(downloaded_checkpoint_files) if downloaded_checkpoint_files else "-",
+        "missing_checkpoint_files": ", ".join(collect_missing_checkpoint_files(spec)) or "-",
         "missing_data_paths": "-",
         "missing_mask_paths": "-",
         "setup_status": setup_status,
@@ -751,6 +752,7 @@ def _blocked_from_status(
     checkpoint_root: Path,
     missing_local_paths: list[str],
     caption_dataset_prepared: bool,
+    downloaded_checkpoint_files: list[str],
     unavailable_reason: str,
     settings: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -762,6 +764,7 @@ def _blocked_from_status(
             checkpoint_root=checkpoint_root,
             missing_local_paths=missing_local_paths,
             caption_dataset_prepared=caption_dataset_prepared,
+            downloaded_checkpoint_files=downloaded_checkpoint_files,
             setup_status="restart_required",
             mask_generation_reason="runtime_restart_required",
             mask_generation_error="-",
@@ -776,6 +779,7 @@ def _blocked_from_status(
             checkpoint_root=checkpoint_root,
             missing_local_paths=missing_local_paths,
             caption_dataset_prepared=caption_dataset_prepared,
+            downloaded_checkpoint_files=downloaded_checkpoint_files,
             setup_status="blocked",
             mask_generation_reason=unavailable_reason,
             mask_generation_error=status["error"],
@@ -802,6 +806,7 @@ def setup_univad(
     caption_dataset_prepared = maybe_prepare_univad_caption_dataset(
         spec, raw_loco_root=raw_loco_root, settings=settings
     )
+    downloaded_checkpoint_files = maybe_download_univad_checkpoints(spec, settings)
 
     dependency_checks = [
         (maybe_fix_univad_runtime_dependency_stack, "runtime_dependency_unavailable"),
@@ -818,6 +823,7 @@ def setup_univad(
             checkpoint_root=checkpoint_root,
             missing_local_paths=missing_local_paths,
             caption_dataset_prepared=caption_dataset_prepared,
+            downloaded_checkpoint_files=downloaded_checkpoint_files,
             unavailable_reason=unavailable_reason,
             settings=settings,
         )
@@ -832,7 +838,6 @@ def setup_univad(
 
     ensure_editable_package(groundingdino_dir)
     ensure_importable_path(groundingdino_dir)
-    downloaded_checkpoint_files = maybe_download_univad_checkpoints(spec, settings)
     mask_status = maybe_prepare_univad_grounding_masks(spec, categories=categories, settings=settings)
     missing_checkpoint_files = collect_missing_checkpoint_files(spec)
     missing_data_paths = collect_missing_data_paths(spec, categories)
