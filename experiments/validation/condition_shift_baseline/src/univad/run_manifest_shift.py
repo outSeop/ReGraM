@@ -87,6 +87,34 @@ def clear_cuda_cache(device: torch.device, enabled: bool) -> None:
         torch.cuda.empty_cache()
 
 
+@contextlib.contextmanager
+def half_precision_dinov2_hub_load(enabled: bool):
+    original_load = torch.hub.load
+
+    if not enabled:
+        yield
+        return
+
+    def patched_load(repo_or_dir, model, *args, **kwargs):
+        loaded_model = original_load(repo_or_dir, model, *args, **kwargs)
+        if str(model) == "dinov2_vitg14":
+            print("load DINOv2 ViT-G/14 backbone in fp16 for low-memory CUDA runtime")
+            return loaded_model.half()
+        return loaded_model
+
+    torch.hub.load = patched_load
+    try:
+        yield
+    finally:
+        torch.hub.load = original_load
+
+
+def cuda_autocast_context(device: torch.device, enabled: bool):
+    if enabled and device.type == "cuda":
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    return contextlib.nullcontext()
+
+
 def amp_unsupported_error(exc: RuntimeError) -> bool:
     message = str(exc)
     return "not implemented for 'Half'" in message or "not implemented for Half" in message
@@ -109,11 +137,7 @@ def score_image_once(
         transform=transform,
         device=device,
     )
-    amp_context = (
-        torch.autocast(device_type="cuda", dtype=torch.float16)
-        if use_amp and device.type == "cuda"
-        else contextlib.nullcontext()
-    )
+    amp_context = cuda_autocast_context(device, use_amp)
     try:
         with torch.inference_mode(), amp_context:
             pred = model(batched, image_path, image_pil_list)
@@ -271,6 +295,11 @@ def main() -> None:
         help="Do not call torch.cuda.empty_cache() between UniVAD scoring calls.",
     )
     parser.add_argument(
+        "--disable-low-memory-backbone",
+        action="store_true",
+        help="Keep the DINOv2 ViT-G/14 backbone in fp32 instead of fp16.",
+    )
+    parser.add_argument(
         "--output",
         default="experiments/validation/condition_shift_baseline/reports/univad_manifest_shift",
     )
@@ -311,6 +340,8 @@ def main() -> None:
 
     device = torch.device(args.device)
     clear_cache = not args.disable_cuda_empty_cache
+    low_memory_backbone = device.type == "cuda" and not args.disable_low_memory_backbone
+    effective_amp = args.amp or low_memory_backbone
     data_root = resolve_repo_path(args.data_root)
     input_root = resolve_repo_path(args.input_root)
 
@@ -372,12 +403,22 @@ def main() -> None:
 
     with univad_runtime_context(univad_root):
         phase_started_at = time.perf_counter()
+        clear_cuda_cache(device, clear_cache)
         constructor_kwargs = {"image_size": args.image_size}
-        if "device" in inspect.signature(UniVAD.__init__).parameters:
+        constructor_accepts_device = "device" in inspect.signature(UniVAD.__init__).parameters
+        if constructor_accepts_device:
             constructor_kwargs["device"] = device
-        model = UniVAD(**constructor_kwargs).to(device)
+        with half_precision_dinov2_hub_load(low_memory_backbone):
+            model = UniVAD(**constructor_kwargs)
+        if not constructor_accepts_device:
+            model = model.to(device)
         model.eval()
-        finish_phase(phase_logs, "model_build", phase_started_at)
+        finish_phase(
+            phase_logs,
+            "model_build",
+            phase_started_at,
+            extra=f"low_memory_backbone={low_memory_backbone} | amp={effective_amp}",
+        )
 
         phase_started_at = time.perf_counter()
         reference_tensor, reference_paths = load_reference_tensors(
@@ -387,13 +428,14 @@ def main() -> None:
             transform=transform,
             device=device,
         )
-        model.setup(
-            {
-                "few_shot_samples": reference_tensor,
-                "dataset_category": args.category,
-                "image_path": reference_paths,
-            }
-        )
+        with cuda_autocast_context(device, effective_amp):
+            model.setup(
+                {
+                    "few_shot_samples": reference_tensor,
+                    "dataset_category": args.category,
+                    "image_path": reference_paths,
+                }
+            )
         clear_cuda_cache(device, clear_cache)
         finish_phase(
             phase_logs,
@@ -415,7 +457,7 @@ def main() -> None:
                     transform,
                     device,
                     image_size=args.image_size,
-                    use_amp=args.amp,
+                    use_amp=effective_amp,
                     clear_cache=clear_cache,
                 )
             )
@@ -439,7 +481,7 @@ def main() -> None:
                     transform,
                     device,
                     image_size=args.image_size,
-                    use_amp=args.amp,
+                    use_amp=effective_amp,
                     clear_cache=clear_cache,
                 )
             )
@@ -492,7 +534,7 @@ def main() -> None:
                             transform,
                             device,
                             image_size=args.image_size,
-                            use_amp=args.amp,
+                            use_amp=effective_amp,
                             clear_cache=clear_cache,
                         )
                     )
@@ -554,7 +596,9 @@ def main() -> None:
             "image_size": args.image_size,
             "k_shot": args.k_shot,
             "round": args.round,
-            "amp": args.amp,
+            "amp": effective_amp,
+            "requested_amp": args.amp,
+            "low_memory_backbone": low_memory_backbone,
             "cuda_empty_cache": clear_cache,
         },
     )
