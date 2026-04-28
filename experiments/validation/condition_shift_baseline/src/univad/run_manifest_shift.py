@@ -65,6 +65,13 @@ def univad_runtime_context(univad_root: Path):
         os.chdir(previous_cwd)
 
 
+def ensure_univad_import_paths(univad_root: Path) -> None:
+    groundingdino_root = univad_root / "models" / "GroundingDINO"
+    for path in (univad_root, groundingdino_root):
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+
+
 def build_transform(image_size: int):
     return transforms.Compose(
         [
@@ -369,6 +376,7 @@ def main() -> None:
 
     phase_started_at = time.perf_counter()
     univad_root = ensure_external_on_path("univad")
+    ensure_univad_import_paths(univad_root)
     from UniVAD import UniVAD  # noqa: WPS433
 
     patched_dense_crf = patch_univad_dense_crf_float32()
