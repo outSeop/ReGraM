@@ -49,6 +49,7 @@ def default_univad_setup_flags() -> dict[str, Any]:
         "auto_fix_univad_torch_stack": True,
         "auto_fix_univad_transformers_stack": True,
         "auto_fix_univad_runtime_deps": True,
+        "restore_univad_grounding_masks_from_drive": True,
         "backup_univad_grounding_masks_to_drive": True,
         "auto_mount_google_drive_for_univad_masks": True,
         "univad_mask_drive_backup_root": "/content/drive/MyDrive/ReGraM/univad_masks/mvtec_loco_caption",
@@ -133,6 +134,34 @@ def build_mask_backup_status(
     }
 
 
+def build_mask_restore_status(
+    *,
+    attempted: bool,
+    status: str,
+    source_root: Path | None,
+    copied_categories: list[str] | None = None,
+    copied_mask_files: int = 0,
+    note: str = "-",
+) -> dict[str, Any]:
+    return {
+        "attempted": attempted,
+        "status": status,
+        "source_root": str(source_root) if source_root is not None else "-",
+        "copied_categories": copied_categories or [],
+        "copied_mask_files": copied_mask_files,
+        "note": note,
+    }
+
+
+def resolve_univad_mask_drive_root(settings: dict[str, Any]) -> Path:
+    return Path(
+        os.environ.get(
+            "UNIVAD_MASK_DRIVE_BACKUP_ROOT",
+            str(settings.get("univad_mask_drive_backup_root", "")),
+        )
+    )
+
+
 def maybe_mount_google_drive_for_backup(destination_root: Path, settings: dict[str, Any]) -> None:
     if not str(destination_root).startswith("/content/drive"):
         return
@@ -146,6 +175,73 @@ def maybe_mount_google_drive_for_backup(destination_root: Path, settings: dict[s
         return
     print("mount Google Drive for UniVAD mask backup")
     drive.mount("/content/drive")
+
+
+def maybe_restore_univad_grounding_masks_from_drive(
+    spec: dict[str, Any],
+    *,
+    categories: list[str],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    if not settings.get("restore_univad_grounding_masks_from_drive", False):
+        return build_mask_restore_status(
+            attempted=False,
+            status="disabled",
+            source_root=None,
+            note="UniVAD mask Drive restore disabled",
+        )
+
+    source_root = resolve_univad_mask_drive_root(settings)
+    if not source_root:
+        return build_mask_restore_status(
+            attempted=True,
+            status="source_unset",
+            source_root=None,
+            note="UniVAD mask Drive restore root is empty",
+        )
+    maybe_mount_google_drive_for_backup(source_root, settings)
+    if str(source_root).startswith("/content/drive") and not Path("/content/drive/MyDrive").exists():
+        return build_mask_restore_status(
+            attempted=True,
+            status="drive_unavailable",
+            source_root=source_root,
+            note="Mount Google Drive in Colab before rerunning setup to restore UniVAD masks",
+        )
+    if not source_root.exists():
+        return build_mask_restore_status(
+            attempted=True,
+            status="source_missing",
+            source_root=source_root,
+            note=f"UniVAD mask Drive cache does not exist: {source_root}",
+        )
+
+    mask_root = spec["mask_root"]
+    mask_root.mkdir(parents=True, exist_ok=True)
+    copied_categories: list[str] = []
+    copied_mask_files = 0
+    for category in categories:
+        source_category = source_root / category
+        if not source_category.exists():
+            continue
+        destination_category = mask_root / category
+        shutil.copytree(source_category, destination_category, dirs_exist_ok=True)
+        copied_categories.append(category)
+        copied_mask_files += sum(1 for _ in destination_category.rglob("grounding_mask.png"))
+
+    status = "ok" if copied_categories else "no_category_masks"
+    note = (
+        f"UniVAD grounding masks restored from {source_root}"
+        if copied_categories
+        else f"No UniVAD category mask folders found under {source_root}"
+    )
+    return build_mask_restore_status(
+        attempted=True,
+        status=status,
+        source_root=source_root,
+        copied_categories=copied_categories,
+        copied_mask_files=copied_mask_files,
+        note=note,
+    )
 
 
 def maybe_backup_univad_grounding_masks(
@@ -162,12 +258,7 @@ def maybe_backup_univad_grounding_masks(
             note="UniVAD mask Drive backup disabled",
         )
 
-    destination_root = Path(
-        os.environ.get(
-            "UNIVAD_MASK_DRIVE_BACKUP_ROOT",
-            str(settings.get("univad_mask_drive_backup_root", "")),
-        )
-    )
+    destination_root = resolve_univad_mask_drive_root(settings)
     if not destination_root:
         return build_mask_backup_status(
             attempted=True,
@@ -822,6 +913,7 @@ def build_univad_setup_blocked_row(
     missing_local_paths: list[str],
     caption_dataset_prepared: bool,
     downloaded_checkpoint_files: list[str],
+    mask_restore_status: dict[str, Any],
     mask_backup_status: dict[str, Any],
     setup_status: str,
     mask_generation_reason: str,
@@ -848,6 +940,14 @@ def build_univad_setup_blocked_row(
         "download_missing_checkpoints": settings["download_missing_univad_checkpoints"],
         "downloaded_checkpoint_files": ", ".join(downloaded_checkpoint_files) if downloaded_checkpoint_files else "-",
         "missing_checkpoint_files": ", ".join(collect_missing_checkpoint_files(spec)) or "-",
+        "mask_restore_status": mask_restore_status["status"],
+        "mask_restore_path": mask_restore_status["source_root"],
+        "mask_restore_categories": (
+            ", ".join(mask_restore_status["copied_categories"])
+            if mask_restore_status["copied_categories"]
+            else "-"
+        ),
+        "mask_restore_file_count": mask_restore_status["copied_mask_files"],
         "mask_backup_status": mask_backup_status["status"],
         "mask_backup_path": mask_backup_status["destination_root"],
         "mask_backup_categories": (
@@ -873,6 +973,7 @@ def _blocked_from_status(
     missing_local_paths: list[str],
     caption_dataset_prepared: bool,
     downloaded_checkpoint_files: list[str],
+    mask_restore_status: dict[str, Any],
     mask_backup_status: dict[str, Any],
     unavailable_reason: str,
     settings: dict[str, Any],
@@ -886,6 +987,7 @@ def _blocked_from_status(
             missing_local_paths=missing_local_paths,
             caption_dataset_prepared=caption_dataset_prepared,
             downloaded_checkpoint_files=downloaded_checkpoint_files,
+            mask_restore_status=mask_restore_status,
             mask_backup_status=mask_backup_status,
             setup_status="restart_required",
             mask_generation_reason="runtime_restart_required",
@@ -902,6 +1004,7 @@ def _blocked_from_status(
             missing_local_paths=missing_local_paths,
             caption_dataset_prepared=caption_dataset_prepared,
             downloaded_checkpoint_files=downloaded_checkpoint_files,
+            mask_restore_status=mask_restore_status,
             mask_backup_status=mask_backup_status,
             setup_status="blocked",
             mask_generation_reason=unavailable_reason,
@@ -930,6 +1033,9 @@ def setup_univad(
         spec, raw_loco_root=raw_loco_root, settings=settings
     )
     downloaded_checkpoint_files = maybe_download_univad_checkpoints(spec, settings)
+    mask_restore_status = maybe_restore_univad_grounding_masks_from_drive(
+        spec, categories=categories, settings=settings
+    )
     mask_backup_status = maybe_backup_univad_grounding_masks(spec, categories=categories, settings=settings)
 
     dependency_checks = [
@@ -948,6 +1054,7 @@ def setup_univad(
             missing_local_paths=missing_local_paths,
             caption_dataset_prepared=caption_dataset_prepared,
             downloaded_checkpoint_files=downloaded_checkpoint_files,
+            mask_restore_status=mask_restore_status,
             mask_backup_status=mask_backup_status,
             unavailable_reason=unavailable_reason,
             settings=settings,
@@ -995,6 +1102,14 @@ def setup_univad(
         "download_missing_checkpoints": settings["download_missing_univad_checkpoints"],
         "downloaded_checkpoint_files": ", ".join(downloaded_checkpoint_files) if downloaded_checkpoint_files else "-",
         "missing_checkpoint_files": ", ".join(missing_checkpoint_files) if missing_checkpoint_files else "-",
+        "mask_restore_status": mask_restore_status["status"],
+        "mask_restore_path": mask_restore_status["source_root"],
+        "mask_restore_categories": (
+            ", ".join(mask_restore_status["copied_categories"])
+            if mask_restore_status["copied_categories"]
+            else "-"
+        ),
+        "mask_restore_file_count": mask_restore_status["copied_mask_files"],
         "mask_backup_status": mask_backup_status["status"],
         "mask_backup_path": mask_backup_status["destination_root"],
         "mask_backup_categories": (
