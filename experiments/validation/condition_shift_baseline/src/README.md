@@ -4,19 +4,27 @@
 
 ## Quick Guide
 
-- `core/`
-  - manifest 생성, 공통 manifest-shift helper, notebook orchestration, dashboard loader, PatchCore 평가, summary 계약, 보조 검증 스크립트
+- `common/`
+  - contracts, path, logging/wandb, preview 등 공통 유틸
+- `data/`
+  - manifest 생성/해석, augmentation runtime
+- `orchestration/`
+  - notebook orchestration, dashboard loader
+- `runners/patchcore/`
+  - PatchCore 실행 entry와 보조 검증 runner
 - `univad/`
   - UniVAD 기준 dataset 준비, Colab runtime setup, smoke test, clean eval
+- `core/`
+  - 이전 경로 호환용 wrapper. 신규 코드는 위 namespaced 경로를 우선 사용
 
 ## Primary Entry Points
 
-- [core/build_query_manifest.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/build_query_manifest.py)
+- [data/build_query_manifest.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/data/build_query_manifest.py)
   - 입력: `data/query_normal_clean`
   - 출력: `manifests/query_*.jsonl`
   - 역할: on-the-fly augmentation manifest 생성기
 
-- [core/run_patchcore_manifest_shift.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/run_patchcore_manifest_shift.py)
+- [runners/patchcore/run_manifest_shift.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/runners/patchcore/run_manifest_shift.py)
   - 입력: `manifest jsonl`, `category`, raw LOCO dataset root
   - 출력: `reports/patchcore_manifest_shift/*.json`, `log.txt`
   - 역할: PatchCore shift evaluation runner
@@ -26,12 +34,12 @@
   - 출력: 공통 run spec, summary scaffold, wandb/log helper
   - 역할: PatchCore/UniVAD 공통 manifest-shift orchestration helper
 
-- [core/notebook_orchestration.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/notebook_orchestration.py)
+- [orchestration/notebook_orchestration.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/orchestration/notebook_orchestration.py)
   - 입력: notebook control 값, baseline specs, manifest 목록
   - 출력: run config, readiness/display helper, execution history
   - 역할: notebook을 얇게 유지하기 위한 orchestration helper
 
-- [core/dashboard_loader.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/core/dashboard_loader.py)
+- [orchestration/dashboard_loader.py](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/orchestration/dashboard_loader.py)
   - 입력: runner summary JSON
   - 출력: dashboard DataFrame과 plot
   - 역할: notebook result viewer helper

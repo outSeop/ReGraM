@@ -92,7 +92,9 @@ baseline 조사와 코드 출처는 [docs/baseline_survey.md](/Users/song-inseop
 - 100줄 이상 setup/run/report helper는 Python 모듈로 분리한다.
 - Colab에서는 먼저 Git으로 repo를 clone 또는 pull 하고, 그 다음 dataset bootstrap이 필요하면 `colab/bootstrap_runtime.py` 같은 별도 Python 스크립트를 호출한다.
 - runner 실패 시 traceback을 가공하지 않고, runner가 남긴 `summary.json` 또는 `log.txt` 경로를 그대로 보여준다.
-- 현재 기본 노트북은 [notebook/experiment.ipynb](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/notebook/experiment.ipynb) 이며 viewer/orchestrator로만 사용한다.
+- 현재 기본 노트북 진입점은 [notebook/01_run_orchestrator.ipynb](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/notebook/01_run_orchestrator.ipynb) 이다.
+- 분석 전용은 [notebook/02_analysis_dashboard.ipynb](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/notebook/02_analysis_dashboard.ipynb),
+  figure export 전용은 [notebook/03_figure_export.ipynb](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/notebook/03_figure_export.ipynb)을 사용한다.
 
 ## Git 기반 notebook 원칙
 
@@ -219,6 +221,16 @@ python experiments/validation/condition_shift_baseline/src/core/run_patchcore_ma
 5. query manifest를 만든다.
 6. 결과를 `results/result_template.md` 형식으로 남긴다.
 7. threshold 기준을 `clean_max` 또는 `per_run_optimized` 중 하나로 고정한다.
+
+### Refactor smoke check (권장)
+
+리팩터링 이후 경로 호환을 빠르게 확인할 때:
+
+```bash
+python experiments/validation/condition_shift_baseline/scripts/smoke_import_paths.py
+pytest -q experiments/validation/condition_shift_baseline/tests/test_import_compatibility.py
+python experiments/validation/condition_shift_baseline/scripts/run_refactor_checks.py
+```
 
 ## 우선 지표
 
