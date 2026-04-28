@@ -713,7 +713,13 @@ def maybe_fix_univad_runtime_dependency_stack(settings: dict[str, Any]) -> dict[
     install_steps = [
         ["install", "--upgrade", "--no-cache-dir", f"numpy=={UNIVAD_NUMPY_VERSION}"],
         ["install", "--upgrade", "--no-cache-dir", f"opencv-python-headless=={UNIVAD_OPENCV_VERSION}"],
-        ["install", "--upgrade", "--no-cache-dir", *UNIVAD_RUNTIME_DEPENDENCY_SPECS],
+        [
+            "install",
+            "--upgrade",
+            "--no-cache-dir",
+            *UNIVAD_RUNTIME_DEPENDENCY_SPECS,
+            f"numpy=={UNIVAD_NUMPY_VERSION}",
+        ],
     ]
     for install_args in install_steps:
         result = run_pip_command(install_args)

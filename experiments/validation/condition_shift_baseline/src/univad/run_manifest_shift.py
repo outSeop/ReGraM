@@ -4,14 +4,35 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.metadata
 import inspect
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+
+def ensure_numpy_1_runtime() -> None:
+    target_version = "1.26.4"
+    try:
+        numpy_version = importlib.metadata.version("numpy")
+    except importlib.metadata.PackageNotFoundError:
+        numpy_version = "-"
+    major_version = numpy_version.split(".", maxsplit=1)[0]
+    if major_version == "1":
+        return
+    print(f"install numpy=={target_version} before torch import; current numpy={numpy_version}")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", f"numpy=={target_version}"],
+        check=True,
+    )
+
+
+ensure_numpy_1_runtime()
 
 import numpy as np
 import torch
