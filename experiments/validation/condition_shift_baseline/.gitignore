@@ -13,6 +13,8 @@ reports/**/artifacts/
 runs/
 
 data/
+!src/data/
+!src/data/*.py
 cache/
 checkpoints/
 
