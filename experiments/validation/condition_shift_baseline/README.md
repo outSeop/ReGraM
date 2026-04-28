@@ -222,6 +222,15 @@ python experiments/validation/condition_shift_baseline/src/core/run_patchcore_ma
 6. 결과를 `results/result_template.md` 형식으로 남긴다.
 7. threshold 기준을 `clean_max` 또는 `per_run_optimized` 중 하나로 고정한다.
 
+### Refactor smoke check (권장)
+
+리팩터링 이후 경로 호환을 빠르게 확인할 때:
+
+```bash
+python experiments/validation/condition_shift_baseline/scripts/smoke_import_paths.py
+pytest -q experiments/validation/condition_shift_baseline/tests/test_import_compatibility.py
+```
+
 ## 우선 지표
 
 - `FPR(clean normal)`
