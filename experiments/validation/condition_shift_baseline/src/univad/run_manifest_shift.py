@@ -15,7 +15,6 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import numpy as np
 import torch
-import torchvision.transforms as transforms
 from PIL import Image
 from sklearn.metrics import roc_auc_score
 
@@ -72,13 +71,20 @@ def ensure_univad_import_paths(univad_root: Path) -> None:
             sys.path.insert(0, str(path))
 
 
+class ResizeToTensorNoNumpy:
+    def __init__(self, image_size: int) -> None:
+        self.image_size = image_size
+
+    def __call__(self, image: Image.Image) -> torch.Tensor:
+        resized = image.resize((self.image_size, self.image_size), resample=Image.Resampling.BILINEAR)
+        image_bytes = resized.convert("RGB").tobytes()
+        tensor = torch.frombuffer(image_bytes, dtype=torch.uint8).clone()
+        tensor = tensor.view(self.image_size, self.image_size, 3)
+        return tensor.permute(2, 0, 1).contiguous().float().div(255.0)
+
+
 def build_transform(image_size: int):
-    return transforms.Compose(
-        [
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-        ]
-    )
+    return ResizeToTensorNoNumpy(image_size)
 
 
 def pil_to_univad_inputs(image: Image.Image, *, image_size: int, transform, device: torch.device):
