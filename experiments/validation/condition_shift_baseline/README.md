@@ -229,6 +229,7 @@ python experiments/validation/condition_shift_baseline/src/core/run_patchcore_ma
 ```bash
 python experiments/validation/condition_shift_baseline/scripts/smoke_import_paths.py
 pytest -q experiments/validation/condition_shift_baseline/tests/test_import_compatibility.py
+python experiments/validation/condition_shift_baseline/scripts/run_refactor_checks.py
 ```
 
 ## 우선 지표
