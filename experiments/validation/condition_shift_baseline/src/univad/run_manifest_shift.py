@@ -8,6 +8,7 @@ import importlib.metadata
 import inspect
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -160,6 +161,47 @@ def patch_univad_optional_pydensecrf_file(univad_root: Path) -> bool:
     return True
 
 
+def patch_univad_reseg_loop_guard(univad_root: Path) -> bool:
+    univad_path = univad_root / "UniVAD.py"
+    if not univad_path.exists():
+        return False
+
+    text = univad_path.read_text(encoding="utf-8")
+    if "REGRAM_UNIVAD_MAX_RESEG_ATTEMPTS" in text:
+        return False
+
+    target = (
+        "                while part_num not in part_num_right:\n"
+        "                    kmeans = KMeans(init=\"k-means++\", n_clusters=n_cluster)\n"
+    )
+    replacement = (
+        "                regram_max_reseg_attempts = int(os.environ.get(\"REGRAM_UNIVAD_MAX_RESEG_ATTEMPTS\", \"3\"))\n"
+        "                regram_reseg_attempt = 0\n"
+        "                while part_num not in part_num_right:\n"
+        "                    regram_reseg_attempt += 1\n"
+        "                    if regram_reseg_attempt > regram_max_reseg_attempts:\n"
+        "                        print(\n"
+        "                            \"warning: UniVAD re-seg loop did not reach expected part count; \"\n"
+        "                            f\"part_num={part_num}, expected={part_num_right}, \"\n"
+        "                            f\"attempts={regram_max_reseg_attempts}. Continuing with last heat masks.\",\n"
+        "                            flush=True,\n"
+        "                        )\n"
+        "                        break\n"
+        "                    print(\n"
+        "                        \"UniVAD re-seg attempt \"\n"
+        "                        f\"{regram_reseg_attempt}/{regram_max_reseg_attempts}: \"\n"
+        "                        f\"part_num={part_num}, expected={part_num_right}\",\n"
+        "                        flush=True,\n"
+        "                    )\n"
+        "                    kmeans = KMeans(init=\"k-means++\", n_clusters=n_cluster)\n"
+    )
+    if target not in text:
+        return False
+    univad_path.write_text(text.replace(target, replacement), encoding="utf-8")
+    print(f"patch UniVAD re-seg loop guard: {univad_path}")
+    return True
+
+
 class ResizeToTensorNoNumpy:
     def __init__(self, image_size: int) -> None:
         self.image_size = image_size
@@ -187,6 +229,35 @@ def pil_to_univad_inputs(image: Image.Image, *, image_size: int, transform, devi
 def clear_cuda_cache(device: torch.device, enabled: bool) -> None:
     if enabled and device.type == "cuda":
         torch.cuda.empty_cache()
+
+
+@contextlib.contextmanager
+def timeout_guard(seconds: int, *, phase_name: str):
+    if seconds <= 0 or not hasattr(signal, "setitimer"):
+        yield
+        return
+
+    def _handle_timeout(signum, frame):  # noqa: ANN001, ARG001
+        raise TimeoutError(f"{phase_name} exceeded timeout_sec={seconds}")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, float(seconds))
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def collect_heat_mask_debug_stats(univad_root: Path, category: str) -> str:
+    heat_root = univad_root / "heat_masks"
+    if not heat_root.exists():
+        return f"heat_masks_root_missing={heat_root}"
+    category_dirs = sorted(path for path in heat_root.glob(f"{category}*") if path.is_dir())
+    png_count = sum(len(list(path.rglob("*.png"))) for path in category_dirs)
+    dir_names = ",".join(path.name for path in category_dirs) if category_dirs else "-"
+    return f"heat_masks_root={heat_root} | category_dirs={dir_names} | png_count={png_count}"
 
 
 @contextlib.contextmanager
@@ -451,6 +522,18 @@ def main() -> None:
     parser.add_argument("--wandb-mode", default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--wandb-log-images", action="store_true")
     parser.add_argument("--wandb-max-images", type=int, default=2)
+    parser.add_argument(
+        "--setup-timeout-sec",
+        type=int,
+        default=1800,
+        help="Timeout guard for model.setup phase. Set 0 to disable.",
+    )
+    parser.add_argument(
+        "--setup-re-seg",
+        choices=["auto", "true", "false"],
+        default="auto",
+        help="Force UniVAD setup re-seg behavior if model.setup supports re_seg.",
+    )
     args = parser.parse_args()
 
     if not args.device.startswith("cuda"):
@@ -474,6 +557,7 @@ def main() -> None:
     ensure_univad_import_paths(univad_root)
     installed_import_dependencies = ensure_univad_import_dependencies()
     patched_optional_pydensecrf = patch_univad_optional_pydensecrf_file(univad_root)
+    patched_reseg_loop_guard = patch_univad_reseg_loop_guard(univad_root)
     from UniVAD import UniVAD  # noqa: WPS433
 
     patched_dense_crf = patch_univad_dense_crf_float32()
@@ -484,6 +568,7 @@ def main() -> None:
         extra=(
             f"patched_dense_crf={patched_dense_crf} | "
             f"patched_optional_pydensecrf={patched_optional_pydensecrf} | "
+            f"patched_reseg_loop_guard={patched_reseg_loop_guard} | "
             f"installed_import_dependencies={installed_import_dependencies or '-'}"
         ),
     )
@@ -578,20 +663,46 @@ def main() -> None:
             transform=transform,
             device=device,
         )
-        with cuda_autocast_context(device, effective_amp):
-            model.setup(
-                {
-                    "few_shot_samples": reference_tensor,
-                    "dataset_category": args.category,
-                    "image_path": reference_paths,
-                }
-            )
+        setup_payload = {
+            "few_shot_samples": reference_tensor,
+            "dataset_category": args.category,
+            "image_path": reference_paths,
+        }
+        setup_kwargs: dict[str, object] = {}
+        setup_signature = inspect.signature(model.setup)
+        if "re_seg" in setup_signature.parameters and args.setup_re_seg != "auto":
+            setup_kwargs["re_seg"] = args.setup_re_seg == "true"
+        log_phase(
+            phase_logs,
+            "setup_few_shot_begin",
+            (
+                f"k_shot={args.k_shot} | round={args.round} | "
+                f"setup_re_seg={setup_kwargs.get('re_seg', 'auto')} | "
+                f"{collect_heat_mask_debug_stats(univad_root, args.category)}"
+            ),
+        )
+        try:
+            with timeout_guard(args.setup_timeout_sec, phase_name="setup_few_shot"):
+                with cuda_autocast_context(device, effective_amp):
+                    model.setup(setup_payload, **setup_kwargs)
+        except TimeoutError as exc:
+            debug_stats = collect_heat_mask_debug_stats(univad_root, args.category)
+            raise RuntimeError(
+                "UniVAD model.setup timed out. "
+                f"category={args.category} | {debug_stats} | "
+                "Try --setup-re-seg false or increase --setup-timeout-sec. "
+                "If external UniVAD re-seg loop is stuck, inspect heat_masks and filter_bg_noise."
+            ) from exc
         clear_cuda_cache(device, clear_cache)
         finish_phase(
             phase_logs,
             "setup_few_shot",
             phase_started_at,
-            extra=f"k_shot={args.k_shot} | round={args.round}",
+            extra=(
+                f"k_shot={args.k_shot} | round={args.round} | "
+                f"setup_re_seg={setup_kwargs.get('re_seg', 'auto')} | "
+                f"{collect_heat_mask_debug_stats(univad_root, args.category)}"
+            ),
         )
 
         phase_started_at = time.perf_counter()
@@ -751,6 +862,8 @@ def main() -> None:
             "low_memory_backbone": low_memory_backbone,
             "patched_dense_crf": patched_dense_crf,
             "cuda_empty_cache": clear_cache,
+            "setup_timeout_sec": args.setup_timeout_sec,
+            "setup_re_seg": args.setup_re_seg,
         },
     )
 

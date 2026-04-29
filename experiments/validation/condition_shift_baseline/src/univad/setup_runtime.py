@@ -636,6 +636,49 @@ def patch_univad_optional_pydensecrf(univad_dir: Path) -> bool:
     return True
 
 
+def patch_univad_reseg_loop_guard(univad_dir: Path) -> bool:
+    univad_path = univad_dir / "UniVAD.py"
+    if not univad_path.exists():
+        print(f"warning: UniVAD file not found: {univad_path}")
+        return False
+
+    text = univad_path.read_text(encoding="utf-8")
+    if "REGRAM_UNIVAD_MAX_RESEG_ATTEMPTS" in text:
+        return False
+
+    target = (
+        "                while part_num not in part_num_right:\n"
+        "                    kmeans = KMeans(init=\"k-means++\", n_clusters=n_cluster)\n"
+    )
+    replacement = (
+        "                regram_max_reseg_attempts = int(os.environ.get(\"REGRAM_UNIVAD_MAX_RESEG_ATTEMPTS\", \"3\"))\n"
+        "                regram_reseg_attempt = 0\n"
+        "                while part_num not in part_num_right:\n"
+        "                    regram_reseg_attempt += 1\n"
+        "                    if regram_reseg_attempt > regram_max_reseg_attempts:\n"
+        "                        print(\n"
+        "                            \"warning: UniVAD re-seg loop did not reach expected part count; \"\n"
+        "                            f\"part_num={part_num}, expected={part_num_right}, \"\n"
+        "                            f\"attempts={regram_max_reseg_attempts}. Continuing with last heat masks.\",\n"
+        "                            flush=True,\n"
+        "                        )\n"
+        "                        break\n"
+        "                    print(\n"
+        "                        \"UniVAD re-seg attempt \"\n"
+        "                        f\"{regram_reseg_attempt}/{regram_max_reseg_attempts}: \"\n"
+        "                        f\"part_num={part_num}, expected={part_num_right}\",\n"
+        "                        flush=True,\n"
+        "                    )\n"
+        "                    kmeans = KMeans(init=\"k-means++\", n_clusters=n_cluster)\n"
+    )
+    if target not in text:
+        print(f"warning: could not find expected UniVAD re-seg loop in {univad_path}")
+        return False
+    univad_path.write_text(text.replace(target, replacement), encoding="utf-8")
+    print(f"patched UniVAD re-seg loop guard: {univad_path}")
+    return True
+
+
 def inspect_univad_torch_stack() -> dict[str, Any]:
     status = {
         "ready": False,
@@ -1088,6 +1131,7 @@ def setup_univad(
     univad_dir = spec["external_dir"]
     ensure_git_repo(univad_dir, spec["external_repo_url"], recurse_submodules=True)
     patched_optional_pydensecrf = patch_univad_optional_pydensecrf(univad_dir)
+    patched_reseg_loop_guard = patch_univad_reseg_loop_guard(univad_dir)
     requirements_path = univad_dir / "requirements.txt"
     groundingdino_dir = spec["groundingdino_dir"]
     checkpoint_root = spec["checkpoint_root"]
@@ -1163,6 +1207,7 @@ def setup_univad(
             ", ".join(mask_status["generated_categories"]) if mask_status["generated_categories"] else "-"
         ),
         "patched_optional_pydensecrf": patched_optional_pydensecrf,
+        "patched_reseg_loop_guard": patched_reseg_loop_guard,
         "patched_component_segmentation": mask_status["patched_component_segmentation"],
         "download_missing_checkpoints": settings["download_missing_univad_checkpoints"],
         "downloaded_checkpoint_files": ", ".join(downloaded_checkpoint_files) if downloaded_checkpoint_files else "-",
