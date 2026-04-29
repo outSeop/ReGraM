@@ -581,6 +581,55 @@ def patch_univad_component_segmentation(univad_dir: Path) -> bool:
     return True
 
 
+def patch_univad_optional_pydensecrf(univad_dir: Path) -> bool:
+    crf_path = univad_dir / "utils" / "crf.py"
+    if not crf_path.exists():
+        print(f"warning: UniVAD CRF file not found: {crf_path}")
+        return False
+
+    text = crf_path.read_text(encoding="utf-8")
+    if "dcrf = None" in text and "if dcrf is None or utils is None:" in text:
+        return False
+
+    import_target = "import pydensecrf.densecrf as dcrf\nimport pydensecrf.utils as utils\n"
+    import_replacement = (
+        "try:\n"
+        "    import pydensecrf.densecrf as dcrf\n"
+        "    import pydensecrf.utils as utils\n"
+        "except ImportError:\n"
+        "    dcrf = None\n"
+        "    utils = None\n"
+    )
+    if import_target not in text:
+        print(f"warning: could not find expected pydensecrf imports in {crf_path}")
+        return False
+    text = text.replace(import_target, import_replacement)
+
+    function_target = (
+        "def dense_crf(image_tensor: torch.FloatTensor, output_logits: torch.FloatTensor):\n"
+        "    image = np.array(VF.to_pil_image(unnorm(image_tensor)))[:, :, ::-1]\n"
+    )
+    function_replacement = (
+        "def dense_crf(image_tensor: torch.FloatTensor, output_logits: torch.FloatTensor):\n"
+        "    if dcrf is None or utils is None:\n"
+        "        output_logits = F.interpolate(\n"
+        "            output_logits.float().unsqueeze(0),\n"
+        "            size=image_tensor.shape[-2:],\n"
+        "            mode=\"bilinear\",\n"
+        "            align_corners=False,\n"
+        "        ).squeeze()\n"
+        "        return F.softmax(output_logits, dim=0).cpu().numpy()\n"
+        "\n"
+        "    image = np.array(VF.to_pil_image(unnorm(image_tensor.float())))[:, :, ::-1]\n"
+    )
+    if function_target not in text:
+        print(f"warning: could not find expected dense_crf body in {crf_path}")
+        return False
+    crf_path.write_text(text.replace(function_target, function_replacement), encoding="utf-8")
+    print(f"patched UniVAD optional pydensecrf fallback: {crf_path}")
+    return True
+
+
 def inspect_univad_torch_stack() -> dict[str, Any]:
     status = {
         "ready": False,
@@ -1032,6 +1081,7 @@ def setup_univad(
 ) -> dict[str, Any]:
     univad_dir = spec["external_dir"]
     ensure_git_repo(univad_dir, spec["external_repo_url"], recurse_submodules=True)
+    patched_optional_pydensecrf = patch_univad_optional_pydensecrf(univad_dir)
     requirements_path = univad_dir / "requirements.txt"
     groundingdino_dir = spec["groundingdino_dir"]
     checkpoint_root = spec["checkpoint_root"]
@@ -1106,6 +1156,7 @@ def setup_univad(
         "mask_generation_categories": (
             ", ".join(mask_status["generated_categories"]) if mask_status["generated_categories"] else "-"
         ),
+        "patched_optional_pydensecrf": patched_optional_pydensecrf,
         "patched_component_segmentation": mask_status["patched_component_segmentation"],
         "download_missing_checkpoints": settings["download_missing_univad_checkpoints"],
         "downloaded_checkpoint_files": ", ".join(downloaded_checkpoint_files) if downloaded_checkpoint_files else "-",
