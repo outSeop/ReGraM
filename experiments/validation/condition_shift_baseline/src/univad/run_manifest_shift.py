@@ -92,6 +92,50 @@ def ensure_univad_import_paths(univad_root: Path) -> None:
             sys.path.insert(0, str(path))
 
 
+def patch_univad_optional_pydensecrf_file(univad_root: Path) -> bool:
+    crf_path = univad_root / "utils" / "crf.py"
+    if not crf_path.exists():
+        return False
+
+    text = crf_path.read_text(encoding="utf-8")
+    if "dcrf = None" in text and "if dcrf is None or utils is None:" in text:
+        return False
+
+    import_target = "import pydensecrf.densecrf as dcrf\nimport pydensecrf.utils as utils\n"
+    import_replacement = (
+        "try:\n"
+        "    import pydensecrf.densecrf as dcrf\n"
+        "    import pydensecrf.utils as utils\n"
+        "except ImportError:\n"
+        "    dcrf = None\n"
+        "    utils = None\n"
+    )
+    function_target = (
+        "def dense_crf(image_tensor: torch.FloatTensor, output_logits: torch.FloatTensor):\n"
+        "    image = np.array(VF.to_pil_image(unnorm(image_tensor)))[:, :, ::-1]\n"
+    )
+    function_replacement = (
+        "def dense_crf(image_tensor: torch.FloatTensor, output_logits: torch.FloatTensor):\n"
+        "    if dcrf is None or utils is None:\n"
+        "        output_logits = F.interpolate(\n"
+        "            output_logits.float().unsqueeze(0),\n"
+        "            size=image_tensor.shape[-2:],\n"
+        "            mode=\"bilinear\",\n"
+        "            align_corners=False,\n"
+        "        ).squeeze()\n"
+        "        return F.softmax(output_logits, dim=0).cpu().numpy()\n"
+        "\n"
+        "    image = np.array(VF.to_pil_image(unnorm(image_tensor.float())))[:, :, ::-1]\n"
+    )
+    if import_target not in text or function_target not in text:
+        return False
+    text = text.replace(import_target, import_replacement)
+    text = text.replace(function_target, function_replacement)
+    crf_path.write_text(text, encoding="utf-8")
+    print(f"patch UniVAD optional pydensecrf fallback: {crf_path}")
+    return True
+
+
 class ResizeToTensorNoNumpy:
     def __init__(self, image_size: int) -> None:
         self.image_size = image_size
@@ -404,10 +448,16 @@ def main() -> None:
     phase_started_at = time.perf_counter()
     univad_root = ensure_external_on_path("univad")
     ensure_univad_import_paths(univad_root)
+    patched_optional_pydensecrf = patch_univad_optional_pydensecrf_file(univad_root)
     from UniVAD import UniVAD  # noqa: WPS433
 
     patched_dense_crf = patch_univad_dense_crf_float32()
-    finish_phase(phase_logs, "imports", phase_started_at, extra=f"patched_dense_crf={patched_dense_crf}")
+    finish_phase(
+        phase_logs,
+        "imports",
+        phase_started_at,
+        extra=f"patched_dense_crf={patched_dense_crf} | patched_optional_pydensecrf={patched_optional_pydensecrf}",
+    )
 
     device = torch.device(args.device)
     clear_cache = not args.disable_cuda_empty_cache
