@@ -16,6 +16,13 @@ from pathlib import Path
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
+UNIVAD_IMPORT_DEPENDENCIES = {
+    "ftfy": "ftfy",
+    "regex": "regex",
+    "tqdm": "tqdm",
+}
+
+
 def ensure_numpy_1_runtime() -> None:
     target_version = "1.26.4"
     try:
@@ -90,6 +97,23 @@ def ensure_univad_import_paths(univad_root: Path) -> None:
     for path in (univad_root, groundingdino_root):
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
+
+
+def ensure_univad_import_dependencies() -> list[str]:
+    missing_specs = []
+    for module_name, package_spec in UNIVAD_IMPORT_DEPENDENCIES.items():
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing_specs.append(package_spec)
+    if not missing_specs:
+        return []
+    print(f"install missing UniVAD import dependencies: {', '.join(missing_specs)}")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", *missing_specs],
+        check=True,
+    )
+    return missing_specs
 
 
 def patch_univad_optional_pydensecrf_file(univad_root: Path) -> bool:
@@ -448,6 +472,7 @@ def main() -> None:
     phase_started_at = time.perf_counter()
     univad_root = ensure_external_on_path("univad")
     ensure_univad_import_paths(univad_root)
+    installed_import_dependencies = ensure_univad_import_dependencies()
     patched_optional_pydensecrf = patch_univad_optional_pydensecrf_file(univad_root)
     from UniVAD import UniVAD  # noqa: WPS433
 
@@ -456,7 +481,11 @@ def main() -> None:
         phase_logs,
         "imports",
         phase_started_at,
-        extra=f"patched_dense_crf={patched_dense_crf} | patched_optional_pydensecrf={patched_optional_pydensecrf}",
+        extra=(
+            f"patched_dense_crf={patched_dense_crf} | "
+            f"patched_optional_pydensecrf={patched_optional_pydensecrf} | "
+            f"installed_import_dependencies={installed_import_dependencies or '-'}"
+        ),
     )
 
     device = torch.device(args.device)

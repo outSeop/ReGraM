@@ -25,6 +25,9 @@ UNIVAD_RUNTIME_DEPENDENCIES = [
     "timm",
     "torchmetrics",
     "wget",
+    "ftfy",
+    "regex",
+    "tqdm",
 ]
 UNIVAD_RUNTIME_DEPENDENCY_SPECS = [
     "addict==2.4.0",
@@ -34,6 +37,9 @@ UNIVAD_RUNTIME_DEPENDENCY_SPECS = [
     "timm==1.0.9",
     "torchmetrics",
     "wget",
+    "ftfy",
+    "regex",
+    "tqdm",
 ]
 UNIVAD_NUMPY_VERSION = "1.26.4"
 UNIVAD_OPENCV_VERSION = "4.11.0.86"
