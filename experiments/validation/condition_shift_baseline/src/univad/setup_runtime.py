@@ -17,6 +17,14 @@ import pandas as pd
 
 from notebook_orchestration import ensure_importable_path, module_available
 
+try:  # pragma: no cover - supports both package imports and notebook path imports.
+    from .transformers_runtime import disable_transformers_tensorflow_backend
+except ImportError:  # pragma: no cover
+    from transformers_runtime import disable_transformers_tensorflow_backend
+
+
+disable_transformers_tensorflow_backend()
+
 
 UNIVAD_RUNTIME_DEPENDENCIES = [
     "addict",
@@ -1023,6 +1031,7 @@ def maybe_fix_univad_runtime_dependency_stack(settings: dict[str, Any]) -> dict[
 
 
 def inspect_univad_transformers_stack() -> dict[str, Any]:
+    disable_transformers_tensorflow_backend()
     status = {
         "ready": False,
         "restart_required": False,
@@ -1138,6 +1147,7 @@ def maybe_prepare_univad_grounding_masks(
     categories: list[str],
     settings: dict[str, Any],
 ) -> dict[str, Any]:
+    disable_transformers_tensorflow_backend()
     import torch  # noqa: WPS433
 
     status = {

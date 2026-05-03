@@ -14,6 +14,13 @@ import sys
 import time
 from pathlib import Path
 
+try:  # pragma: no cover - supports script execution and package imports.
+    from .transformers_runtime import disable_transformers_tensorflow_backend
+except ImportError:  # pragma: no cover
+    from transformers_runtime import disable_transformers_tensorflow_backend
+
+
+disable_transformers_tensorflow_backend()
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
@@ -83,6 +90,7 @@ from repo_paths import REPO_ROOT, finish_phase, log_phase, now_kst_string
 @contextlib.contextmanager
 def univad_runtime_context(univad_root: Path):
     previous_cwd = Path.cwd()
+    disable_transformers_tensorflow_backend()
     os.environ.setdefault("TORCH_HOME", str(univad_root / "pretrained_ckpts" / "torch"))
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/mpl")
     os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")

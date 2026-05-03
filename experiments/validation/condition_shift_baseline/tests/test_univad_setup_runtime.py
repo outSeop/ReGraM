@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from univad.setup_runtime import (  # noqa: E402
     checkpoint_file_ready,
     collect_missing_checkpoint_files,
 )
+from univad.transformers_runtime import disable_transformers_tensorflow_backend  # noqa: E402
 
 
 class UniVADSetupRuntimeTests(unittest.TestCase):
@@ -60,6 +62,30 @@ class UniVADSetupRuntimeTests(unittest.TestCase):
             ),
             ["https://example.test/b1.pth", "https://example.test/b2.pth"],
         )
+
+    def test_disable_transformers_tensorflow_backend_patches_loaded_modules(self) -> None:
+        fake_import_utils = types.SimpleNamespace(_tf_available=True, _tf_version="5.0")
+        fake_generic = types.SimpleNamespace(is_tf_available=lambda: True)
+        previous_import_utils = sys.modules.get("transformers.utils.import_utils")
+        previous_generic = sys.modules.get("transformers.utils.generic")
+        try:
+            sys.modules["transformers.utils.import_utils"] = fake_import_utils
+            sys.modules["transformers.utils.generic"] = fake_generic
+
+            disable_transformers_tensorflow_backend()
+
+            self.assertEqual(fake_import_utils._tf_available, False)
+            self.assertEqual(fake_import_utils._tf_version, "N/A")
+            self.assertEqual(fake_generic.is_tf_available(), False)
+        finally:
+            if previous_import_utils is None:
+                sys.modules.pop("transformers.utils.import_utils", None)
+            else:
+                sys.modules["transformers.utils.import_utils"] = previous_import_utils
+            if previous_generic is None:
+                sys.modules.pop("transformers.utils.generic", None)
+            else:
+                sys.modules["transformers.utils.generic"] = previous_generic
 
 
 if __name__ == "__main__":
