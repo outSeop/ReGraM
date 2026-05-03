@@ -4,6 +4,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -12,10 +13,13 @@ for import_dir in (SRC_DIR, SRC_DIR / "core", SRC_DIR / "orchestration"):
     if str(import_dir) not in sys.path:
         sys.path.insert(0, str(import_dir))
 
+from univad import setup_runtime as setup_runtime_module  # noqa: E402
 from univad.setup_runtime import (  # noqa: E402
     checkpoint_download_urls,
     checkpoint_file_ready,
+    collect_univad_missing_mask_image_paths,
     collect_missing_checkpoint_files,
+    maybe_prepare_univad_grounding_masks,
 )
 from univad.transformers_runtime import disable_transformers_tensorflow_backend  # noqa: E402
 
@@ -86,6 +90,91 @@ class UniVADSetupRuntimeTests(unittest.TestCase):
                 sys.modules.pop("transformers.utils.generic", None)
             else:
                 sys.modules["transformers.utils.generic"] = previous_generic
+
+    def test_grounding_mask_generation_skips_complete_categories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_root = root / "data"
+            mask_root = root / "masks"
+            univad_root = root / "UniVAD"
+            config_root = univad_root / "configs" / "class_histogram"
+            config_root.mkdir(parents=True)
+            (univad_root / "models" / "GroundingDINO").mkdir(parents=True)
+            for category in ("breakfast_box", "screw_bag"):
+                (config_root / f"{category}.yaml").write_text(
+                    "grounding_config:\n  text_prompt: object\n",
+                    encoding="utf-8",
+                )
+                image_path = data_root / category / "train" / "good" / "000.png"
+                image_path.parent.mkdir(parents=True)
+                image_path.write_bytes(b"not-a-real-png")
+            breakfast_mask = mask_root / "breakfast_box" / "train" / "good" / "000" / "grounding_mask.png"
+            breakfast_mask.parent.mkdir(parents=True)
+            breakfast_mask.write_bytes(b"mask")
+
+            calls: list[tuple[list[str], str, dict[str, object]]] = []
+            fake_component = types.ModuleType("models.component_segmentaion")
+            fake_component.grounding_segmentation = lambda image_paths, output_dir, config: calls.append(
+                (list(image_paths), output_dir, config)
+            )
+            fake_models = types.ModuleType("models")
+            fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: False))
+            fake_yaml = types.SimpleNamespace(safe_load=lambda _text: {"grounding_config": {"text_prompt": "object"}})
+            previous_models = sys.modules.get("models")
+            previous_component = sys.modules.get("models.component_segmentaion")
+            previous_torch = sys.modules.get("torch")
+            previous_yaml = sys.modules.get("yaml")
+            try:
+                sys.modules["models"] = fake_models
+                sys.modules["models.component_segmentaion"] = fake_component
+                sys.modules["torch"] = fake_torch
+                sys.modules["yaml"] = fake_yaml
+                spec = {
+                    "data_root": data_root,
+                    "mask_root": mask_root,
+                    "external_dir": univad_root,
+                    "groundingdino_dir": univad_root / "models" / "GroundingDINO",
+                    "requires_cuda": False,
+                    "required_data_paths": [],
+                }
+
+                self.assertEqual(
+                    collect_univad_missing_mask_image_paths(spec, "breakfast_box"),
+                    [],
+                )
+                self.assertEqual(
+                    collect_univad_missing_mask_image_paths(spec, "screw_bag"),
+                    [str(data_root / "screw_bag" / "train" / "good" / "000.png")],
+                )
+
+                with mock.patch.object(setup_runtime_module, "patch_univad_component_segmentation", return_value=False):
+                    status = maybe_prepare_univad_grounding_masks(
+                        spec,
+                        categories=["breakfast_box", "screw_bag"],
+                        settings={"auto_prepare_univad_grounding_masks": True},
+                    )
+
+                self.assertEqual(status["generated_categories"], ["screw_bag"])
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][0], [str(data_root / "screw_bag" / "train" / "good" / "000.png")])
+                self.assertEqual(calls[0][1], str(mask_root / "screw_bag"))
+            finally:
+                if previous_models is None:
+                    sys.modules.pop("models", None)
+                else:
+                    sys.modules["models"] = previous_models
+                if previous_component is None:
+                    sys.modules.pop("models.component_segmentaion", None)
+                else:
+                    sys.modules["models.component_segmentaion"] = previous_component
+                if previous_torch is None:
+                    sys.modules.pop("torch", None)
+                else:
+                    sys.modules["torch"] = previous_torch
+                if previous_yaml is None:
+                    sys.modules.pop("yaml", None)
+                else:
+                    sys.modules["yaml"] = previous_yaml
 
 
 if __name__ == "__main__":

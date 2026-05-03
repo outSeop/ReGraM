@@ -107,7 +107,7 @@ def collect_missing_mask_paths(spec: dict[str, Any], categories: list[str]) -> l
         return []
     missing: list[str] = []
     for category in categories:
-        for image_path in collect_univad_category_image_paths(spec, category):
+        for image_path in collect_univad_missing_mask_image_paths(spec, category):
             candidate = expected_univad_mask_path(
                 Path(image_path),
                 data_root=spec["data_root"],
@@ -116,6 +116,23 @@ def collect_missing_mask_paths(spec: dict[str, Any], categories: list[str]) -> l
             )
             if not candidate.exists():
                 missing.append(str(candidate))
+    return missing
+
+
+def collect_univad_missing_mask_image_paths(spec: dict[str, Any], category: str) -> list[str]:
+    mask_root = spec.get("mask_root")
+    if mask_root is None:
+        return []
+    missing: list[str] = []
+    for image_path in collect_univad_category_image_paths(spec, category):
+        candidate = expected_univad_mask_path(
+            Path(image_path),
+            data_root=spec["data_root"],
+            mask_root=mask_root,
+            category=category,
+        )
+        if not candidate.exists():
+            missing.append(str(image_path))
     return missing
 
 
@@ -1186,14 +1203,18 @@ def maybe_prepare_univad_grounding_masks(
             import yaml  # noqa: WPS433
 
             for category in categories:
-                image_paths = collect_univad_category_image_paths(spec, category)
+                image_paths = collect_univad_missing_mask_image_paths(spec, category)
                 if not image_paths:
+                    print(f"skip UniVAD grounding masks: category={category} already complete")
                     continue
                 config_path = univad_dir / "configs" / "class_histogram" / f"{category}.yaml"
                 config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
                 output_dir = spec["mask_root"] / category
                 output_dir.mkdir(parents=True, exist_ok=True)
-                print(f"generate UniVAD grounding masks: category={category} images={len(image_paths)} output={output_dir}")
+                print(
+                    f"generate UniVAD grounding masks: "
+                    f"category={category} missing_images={len(image_paths)} output={output_dir}"
+                )
                 grounding_segmentation(image_paths, str(output_dir), config["grounding_config"])
                 status["generated_categories"].append(category)
         status["generated"] = bool(status["generated_categories"])
