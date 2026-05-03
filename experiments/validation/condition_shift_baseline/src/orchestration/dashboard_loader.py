@@ -26,6 +26,7 @@ from PIL import Image
 
 from augmentation_runtime import apply_augmentation
 from notebook_orchestration import Markdown, display, display_df, display_title, draw_heatmap, ordered_baselines
+from repo_paths import REPO_ROOT
 
 
 def load_json_if_exists(path: Path) -> dict[str, Any] | None:
@@ -37,6 +38,16 @@ def first_existing_path(candidates: list[Path]) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def resolve_dashboard_artifact_path(path_value: Any) -> Path | None:
+    if not path_value:
+        return None
+    path = Path(str(path_value))
+    candidates = [path]
+    if not path.is_absolute():
+        candidates.append(REPO_ROOT / path)
+    return first_existing_path(candidates)
 
 
 def safe_mean(values: list[float]) -> float:
@@ -166,6 +177,7 @@ def load_dashboard_frames(
     identity_repro_rows: list[dict[str, Any]] = []
     distribution_rows: list[dict[str, Any]] = []
     gallery_rows: list[dict[str, Any]] = []
+    clean_reference_rows: list[dict[str, Any]] = []
 
     for config in summary_sources:
         summary_path = config["summary_path"]
@@ -195,12 +207,38 @@ def load_dashboard_frames(
         payload = summary.get("payload", {})
         clean_good = payload.get("clean_good", {})
         clean_anomaly = payload.get("clean_anomaly", {})
+        clean_logical_anomaly = payload.get("clean_logical_anomaly", {})
+        clean_structural_anomaly = payload.get("clean_structural_anomaly", {})
         clean_scores = payload.get("clean_score_distributions", {})
         clean_normal_scores = [float(value) for value in clean_scores.get("clean_normal_scores", [])]
         clean_anomaly_scores = [float(value) for value in clean_scores.get("clean_anomaly_scores", [])]
+        clean_logical_anomaly_scores = [
+            float(value)
+            for value in clean_scores.get("clean_logical_anomaly_scores", [])
+        ]
+        clean_structural_anomaly_scores = [
+            float(value)
+            for value in clean_scores.get("clean_structural_anomaly_scores", [])
+        ]
         clean_image_auroc = metrics.get("clean_image_auroc")
         baseline = summary["baseline"]
         category = summary["class_name"]
+        for sample_type, sample_rows in payload.get("clean_reference_maps", {}).items():
+            for sample in sample_rows:
+                clean_reference_rows.append(
+                    {
+                        "baseline": baseline,
+                        "category": category,
+                        "sample_type": sample.get("sample_type", sample_type),
+                        "image_path": sample.get("image_path"),
+                        "image_name": sample.get("image_name"),
+                        "source_id": sample.get("source_id"),
+                        "score": sample.get("score"),
+                        "score_delta_from_clean_mean": sample.get("score_delta_from_clean_mean"),
+                        "heatmap_path": sample.get("heatmap_path"),
+                        "overlay_path": sample.get("overlay_path"),
+                    }
+                )
 
         clean_manifest_rows.append(
             {
@@ -211,6 +249,30 @@ def load_dashboard_frames(
                 "clean_good_median": metrics.get("clean_good_median", clean_good.get("median")),
                 "clean_anomaly_mean": metrics.get("clean_anomaly_mean", clean_anomaly.get("mean")),
                 "clean_anomaly_median": metrics.get("clean_anomaly_median", clean_anomaly.get("median")),
+                "clean_logical_image_auroc": metrics.get(
+                    "clean_logical_image_auroc",
+                    payload.get("clean_logical_image_auroc"),
+                ),
+                "clean_logical_anomaly_mean": metrics.get(
+                    "clean_logical_anomaly_mean",
+                    clean_logical_anomaly.get("mean"),
+                ),
+                "clean_logical_anomaly_median": metrics.get(
+                    "clean_logical_anomaly_median",
+                    clean_logical_anomaly.get("median"),
+                ),
+                "clean_structural_image_auroc": metrics.get(
+                    "clean_structural_image_auroc",
+                    payload.get("clean_structural_image_auroc"),
+                ),
+                "clean_structural_anomaly_mean": metrics.get(
+                    "clean_structural_anomaly_mean",
+                    clean_structural_anomaly.get("mean"),
+                ),
+                "clean_structural_anomaly_median": metrics.get(
+                    "clean_structural_anomaly_median",
+                    clean_structural_anomaly.get("median"),
+                ),
                 "summary_path": str(summary_path),
             }
         )
@@ -227,6 +289,8 @@ def load_dashboard_frames(
                     image_auroc_drop_from_clean = clean_image_auroc - shifted_image_auroc
                 shifted_normal_fpr = item.get("shifted_normal_fpr", item.get("fpr_over_clean_max"))
                 shifted_normal_scores = [float(value) for value in item.get("shifted_normal_scores", [])]
+                shifted_image_auroc_vs_logical = item.get("shifted_image_auroc_vs_logical_anomaly")
+                shifted_image_auroc_vs_structural = item.get("shifted_image_auroc_vs_structural_anomaly")
                 row = {
                     "baseline": baseline,
                     "category": category,
@@ -240,7 +304,15 @@ def load_dashboard_frames(
                     "shifted_normal_p75": item.get("p75"),
                     "shifted_normal_fpr": shifted_normal_fpr,
                     "shifted_image_auroc": shifted_image_auroc,
+                    "shifted_image_auroc_vs_logical_anomaly": shifted_image_auroc_vs_logical,
+                    "shifted_image_auroc_vs_structural_anomaly": shifted_image_auroc_vs_structural,
                     "image_auroc_drop_from_clean": image_auroc_drop_from_clean,
+                    "image_auroc_drop_from_clean_logical": item.get(
+                        "image_auroc_drop_from_clean_logical"
+                    ),
+                    "image_auroc_drop_from_clean_structural": item.get(
+                        "image_auroc_drop_from_clean_structural"
+                    ),
                     "mean_score_shift": item.get("mean_score_shift"),
                     "median_score_shift": item.get("median_score_shift"),
                     "shifted_normal_scores": shifted_normal_scores,
@@ -257,6 +329,8 @@ def load_dashboard_frames(
                         "severity_rank": severity_order.get(severity, 999),
                         "clean_normal_scores": clean_normal_scores,
                         "clean_anomaly_scores": clean_anomaly_scores,
+                        "clean_logical_anomaly_scores": clean_logical_anomaly_scores,
+                        "clean_structural_anomaly_scores": clean_structural_anomaly_scores,
                         "shifted_normal_scores": shifted_normal_scores,
                     }
                 )
@@ -277,6 +351,8 @@ def load_dashboard_frames(
                             "seed": sample.get("seed"),
                             "params": json.dumps(sample.get("params", {}), ensure_ascii=True, sort_keys=True),
                             "params_dict": sample.get("params", {}),
+                            "heatmap_path": sample.get("heatmap_path"),
+                            "overlay_path": sample.get("overlay_path"),
                         }
                     )
 
@@ -360,6 +436,8 @@ def load_dashboard_frames(
                 worst_shifted_normal_fpr=("shifted_normal_fpr", "max"),
                 mean_image_auroc_drop_from_clean=("image_auroc_drop_from_clean", "mean"),
                 worst_image_auroc_drop_from_clean=("image_auroc_drop_from_clean", "max"),
+                mean_image_auroc_drop_from_clean_logical=("image_auroc_drop_from_clean_logical", "mean"),
+                mean_image_auroc_drop_from_clean_structural=("image_auroc_drop_from_clean_structural", "mean"),
                 mean_score_shift=("mean_score_shift", "mean"),
                 mean_median_score_shift=("median_score_shift", "mean"),
             )
@@ -379,7 +457,11 @@ def load_dashboard_frames(
                 "shifted_normal_p75",
                 "shifted_normal_fpr",
                 "shifted_image_auroc",
+                "shifted_image_auroc_vs_logical_anomaly",
+                "shifted_image_auroc_vs_structural_anomaly",
                 "image_auroc_drop_from_clean",
+                "image_auroc_drop_from_clean_logical",
+                "image_auroc_drop_from_clean_structural",
                 "mean_score_shift",
                 "median_score_shift",
             ]
@@ -421,6 +503,7 @@ def load_dashboard_frames(
         "manifest_identity_check_df": pd.DataFrame(manifest_identity_check_rows),
         "distribution_df": pd.DataFrame(distribution_rows),
         "gallery_df": pd.DataFrame(gallery_rows),
+        "clean_reference_df": pd.DataFrame(clean_reference_rows),
     }
 
 
@@ -441,6 +524,12 @@ def display_dashboard_tables(frames: dict[str, pd.DataFrame], *, run_history: li
                 "clean_good_median",
                 "clean_anomaly_mean",
                 "clean_anomaly_median",
+                "clean_logical_image_auroc",
+                "clean_logical_anomaly_mean",
+                "clean_logical_anomaly_median",
+                "clean_structural_image_auroc",
+                "clean_structural_anomaly_mean",
+                "clean_structural_anomaly_median",
             ]
         ]
         if not clean_manifest_df.empty
@@ -616,16 +705,117 @@ def build_gallery_panel(sample_row: dict[str, Any], panel_size: tuple[int, int] 
     return canvas
 
 
+def _load_resized_image(path_value: Any, panel_size: tuple[int, int]) -> Image.Image | None:
+    path = resolve_dashboard_artifact_path(path_value)
+    if path is None:
+        return None
+    with Image.open(path) as image_obj:
+        return image_obj.convert("RGB").resize(panel_size)
+
+
+def _set_image_axis(ax, image: Image.Image | None, title: str) -> None:
+    ax.axis("off")
+    ax.set_title(title, fontsize=9)
+    if image is None:
+        ax.text(0.5, 0.5, "missing", ha="center", va="center")
+        return
+    ax.imshow(image)
+
+
+def render_clean_reference_gallery(clean_reference_df: pd.DataFrame, panel_size: tuple[int, int] = (160, 160)) -> None:
+    if clean_reference_df.empty:
+        return
+    display_title(
+        "Clean Reference Maps",
+        "Top-scored clean normal, logical anomaly, and structural anomaly response maps.",
+    )
+    ordered_types = ["clean_normal", "logical_anomaly", "structural_anomaly"]
+    for (baseline, category), group_df in clean_reference_df.groupby(["baseline", "category"]):
+        display(Markdown(f"### {baseline} | {category} | clean/logical/structural reference"))
+        sample_rows: list[dict[str, Any]] = []
+        for sample_type in ordered_types:
+            type_df = group_df[group_df["sample_type"] == sample_type]
+            sample_rows.extend(type_df.sort_values("score", ascending=False).head(2).to_dict("records"))
+        if not sample_rows:
+            continue
+        fig, axes = plt.subplots(
+            len(sample_rows),
+            3,
+            figsize=(9, 2.8 * len(sample_rows)),
+            constrained_layout=True,
+        )
+        if len(sample_rows) == 1:
+            axes = np.asarray([axes])
+        for row_idx, sample in enumerate(sample_rows):
+            original = _load_resized_image(sample.get("image_path"), panel_size)
+            heatmap = _load_resized_image(sample.get("heatmap_path"), panel_size)
+            overlay = _load_resized_image(sample.get("overlay_path"), panel_size)
+            title_prefix = f"{sample.get('sample_type')} | score={float(sample.get('score', 0.0)):.4f}"
+            _set_image_axis(axes[row_idx, 0], original, f"{title_prefix}\nimage")
+            _set_image_axis(axes[row_idx, 1], heatmap, "response map")
+            _set_image_axis(axes[row_idx, 2], overlay, "overlay")
+        plt.show()
+
+
+def render_shifted_explainability_gallery(gallery_df: pd.DataFrame, panel_size: tuple[int, int] = (160, 160)) -> None:
+    if gallery_df.empty:
+        return
+    display_title(
+        "Shifted Normal Response Maps",
+        "Top-scored shifted normal samples with clean source, shifted image, response map, and overlay.",
+    )
+    for (baseline, category, shift_family, severity), cell_df in gallery_df.groupby(
+        ["baseline", "category", "shift_family", "severity"]
+    ):
+        display(Markdown(f"### {baseline} | {category} | {shift_family} | {severity}"))
+        sample_rows = cell_df.sort_values("score", ascending=False).head(4).to_dict("records")
+        fig, axes = plt.subplots(
+            len(sample_rows),
+            4,
+            figsize=(12, 2.8 * max(len(sample_rows), 1)),
+            constrained_layout=True,
+        )
+        if len(sample_rows) == 1:
+            axes = np.asarray([axes])
+        for row_idx, sample in enumerate(sample_rows):
+            image_path = resolve_dashboard_artifact_path(sample["image_path"])
+            if image_path is None:
+                for col_idx, title in enumerate(["clean source", "shifted", "response map", "overlay"]):
+                    _set_image_axis(axes[row_idx, col_idx], None, title)
+                continue
+            with Image.open(image_path) as image_obj:
+                original = image_obj.convert("RGB")
+            shifted = _apply_gallery_augmentation(original, sample)
+            heatmap = _load_resized_image(sample.get("heatmap_path"), panel_size)
+            overlay = _load_resized_image(sample.get("overlay_path"), panel_size)
+            score = float(sample.get("score", 0.0))
+            delta = float(sample.get("score_delta_from_clean_mean", 0.0))
+            _set_image_axis(axes[row_idx, 0], original.resize(panel_size), f"clean source\n{sample.get('source_id')}")
+            _set_image_axis(axes[row_idx, 1], shifted.resize(panel_size), f"shifted\nscore={score:.4f}")
+            _set_image_axis(axes[row_idx, 2], heatmap, "response map")
+            _set_image_axis(axes[row_idx, 3], overlay, f"overlay\ndelta={delta:.4f}")
+        plt.show()
+
+
+def render_explainability_gallery(gallery_df: pd.DataFrame, clean_reference_df: pd.DataFrame) -> None:
+    render_clean_reference_gallery(clean_reference_df)
+    render_shifted_explainability_gallery(gallery_df)
+
+
 def render_visual_dashboard(frames: dict[str, pd.DataFrame], *, dashboard_baselines: list[str]) -> None:
     clean_manifest_df = frames["clean_manifest_df"]
     shift_df = frames["shift_df"]
     distribution_df = frames["distribution_df"]
     gallery_df = frames["gallery_df"]
+    clean_reference_df = frames.get("clean_reference_df", pd.DataFrame())
 
     if clean_manifest_df.empty and shift_df.empty:
         display_title("Visual Dashboard", "No result rows are available yet.")
         return
-    display_title("Visual Dashboard", "Clean baseline, corruption summary, severity trend, and score distributions.")
+    display_title(
+        "Visual Dashboard",
+        "Clean baseline, log/str anomaly split, corruption trend, score distributions, and response-map gallery.",
+    )
 
     if not clean_manifest_df.empty:
         clean_plot_df = clean_manifest_df.copy()
@@ -652,8 +842,8 @@ def render_visual_dashboard(frames: dict[str, pd.DataFrame], *, dashboard_baseli
         render_shift_plots(shift_df, dashboard_baselines)
     if not distribution_df.empty:
         render_distribution_plots(distribution_df)
-    if not gallery_df.empty:
-        render_gallery(gallery_df)
+    if not gallery_df.empty or not clean_reference_df.empty:
+        render_explainability_gallery(gallery_df, clean_reference_df)
 
 
 def render_shift_plots(shift_df: pd.DataFrame, dashboard_baselines: list[str]) -> None:
@@ -712,6 +902,8 @@ def render_shift_plots(shift_df: pd.DataFrame, dashboard_baselines: list[str]) -
     for metric_name, title, cmap in [
         ("shifted_normal_fpr", "Shifted-Normal FPR heatmap", "YlOrRd"),
         ("image_auroc_drop_from_clean", "AUROC-drop heatmap", "YlOrBr"),
+        ("image_auroc_drop_from_clean_logical", "Logical AUROC-drop heatmap", "YlOrBr"),
+        ("image_auroc_drop_from_clean_structural", "Structural AUROC-drop heatmap", "YlOrBr"),
         ("median_score_shift", "Median score-shift heatmap", "PuBuGn"),
     ]:
         fig, axes = plt.subplots(1, len(baselines_in_shift), figsize=(6 * len(baselines_in_shift), 5), constrained_layout=True)
@@ -729,7 +921,10 @@ def render_shift_plots(shift_df: pd.DataFrame, dashboard_baselines: list[str]) -
 
 
 def render_distribution_plots(distribution_df: pd.DataFrame) -> None:
-    display_title("Distribution Visualization", "Compare clean normal and shifted normal score distributions.")
+    display_title(
+        "Distribution Visualization",
+        "Compare clean normal, shifted normal, logical anomaly, and structural anomaly score distributions.",
+    )
     for (baseline, category, shift_family), family_df in distribution_df.groupby(["baseline", "category", "shift_family"]):
         fig, axes = plt.subplots(1, 2, figsize=(14, 4.5), constrained_layout=True)
         boxplot_data = []
@@ -754,9 +949,38 @@ def render_distribution_plots(distribution_df: pd.DataFrame) -> None:
 
         if clean_scores:
             axes[1].hist(clean_scores, bins=20, alpha=0.35, label="clean normal", density=True)
+        clean_logical_anomaly_scores = family_df.iloc[0].get("clean_logical_anomaly_scores", [])
+        clean_structural_anomaly_scores = family_df.iloc[0].get("clean_structural_anomaly_scores", [])
         clean_anomaly_scores = family_df.iloc[0]["clean_anomaly_scores"]
-        if clean_anomaly_scores:
-            axes[1].hist(clean_anomaly_scores, bins=20, histtype="step", linewidth=2, label="clean anomaly", density=True)
+        if clean_logical_anomaly_scores:
+            axes[1].hist(
+                clean_logical_anomaly_scores,
+                bins=20,
+                histtype="step",
+                linewidth=2,
+                label="clean logical anomaly",
+                density=True,
+            )
+        if clean_structural_anomaly_scores:
+            axes[1].hist(
+                clean_structural_anomaly_scores,
+                bins=20,
+                histtype="step",
+                linewidth=2,
+                label="clean structural anomaly",
+                density=True,
+            )
+        if clean_anomaly_scores and not (
+            clean_logical_anomaly_scores or clean_structural_anomaly_scores
+        ):
+            axes[1].hist(
+                clean_anomaly_scores,
+                bins=20,
+                histtype="step",
+                linewidth=2,
+                label="clean anomaly",
+                density=True,
+            )
         for _, row in family_df.sort_values("severity_rank").iterrows():
             shifted_scores = row["shifted_normal_scores"]
             if shifted_scores:
@@ -769,21 +993,4 @@ def render_distribution_plots(distribution_df: pd.DataFrame) -> None:
 
 
 def render_gallery(gallery_df: pd.DataFrame) -> None:
-    display_title("Corruption Gallery", "Original clean image and corruption preview with score metadata.")
-    for (baseline, category, shift_family, severity), cell_df in gallery_df.groupby(
-        ["baseline", "category", "shift_family", "severity"]
-    ):
-        display(Markdown(f"### {baseline} | {category} | {shift_family} | {severity}"))
-        sample_rows = cell_df.sort_values("score", ascending=False).head(4).to_dict("records")
-        fig, axes = plt.subplots(len(sample_rows), 1, figsize=(8, 3.2 * max(len(sample_rows), 1)), constrained_layout=True)
-        if len(sample_rows) == 1:
-            axes = [axes]
-        for ax, sample in zip(axes, sample_rows):
-            panel = build_gallery_panel(sample)
-            ax.imshow(panel)
-            ax.axis("off")
-            ax.set_title(
-                f"score={sample['score']:.4f} | delta_from_clean_mean={sample['score_delta_from_clean_mean']:.4f} | "
-                f"source_id={sample['source_id']}"
-            )
-        plt.show()
+    render_shifted_explainability_gallery(gallery_df)

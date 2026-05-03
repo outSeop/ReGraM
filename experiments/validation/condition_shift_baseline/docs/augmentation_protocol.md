@@ -33,7 +33,7 @@
 - `compression / low_resolution`
   - 목적: codec 및 해상도 저하 민감도 확인
 - `position_shift`
-  - 목적: 작은 spatial perturbation 민감도 확인
+  - 목적: cyclic pixel permutation이 아닌 shrink-and-place spatial perturbation 민감도 확인
 - `low_light`
   - 목적: 실제 현장에서 자주 나타나는 저조도 조건 민감도 확인
 
@@ -96,11 +96,24 @@
 ### position_shift
 
 - `low`
-  - max translation ratio: `0.03`
+  - center shift ratio: `0.03`
+  - placement: `seeded_corner`
+  - fill mode: `border_median`
 - `medium`
-  - max translation ratio: `0.06`
+  - center shift ratio: `0.06`
+  - placement: `seeded_corner`
+  - fill mode: `border_median`
 - `high`
-  - max translation ratio: `0.10`
+  - center shift ratio: `0.10`
+  - placement: `seeded_corner`
+  - fill mode: `border_median`
+
+구현 규칙:
+
+- 원본 이미지를 `1 - 2 * center_shift_ratio` 크기로 축소한다.
+- 축소한 이미지를 원본 크기 캔버스의 `top_left`, `top_right`, `bottom_left`, `bottom_right` 중 하나에 seed 기반으로 배치한다.
+- 남는 영역은 이미지 border median 색으로 채운다.
+- cyclic offset처럼 잘린 픽셀이 반대편으로 넘어가는 permutation은 사용하지 않는다.
 
 ### low_light
 
@@ -119,7 +132,7 @@
 - object를 지우거나 추가하지 않는다.
 - object count가 바뀌는 수준의 crop이나 occlusion은 허용하지 않는다.
 - relation semantics를 바꾸는 큰 affine transform은 허용하지 않는다.
-- `position_shift`는 small perturbation 범위에서만 사용한다.
+- `position_shift`는 small perturbation 범위에서만 사용하며, wraparound/pixel permutation은 금지한다.
 - augmentation 후 사람이 보기에 logical label이 바뀐 것처럼 보이면 사용하지 않는다.
 
 ## 7. 저장 계약

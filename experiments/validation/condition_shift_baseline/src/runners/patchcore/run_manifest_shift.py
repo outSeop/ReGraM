@@ -24,9 +24,10 @@ import numpy as np
 import torch
 
 from manifest_shift_common import (
-    DEFAULT_GALLERY_SAMPLE_LIMIT,
+    attach_heatmap_artifacts,
     build_clean_metric_snapshot,
     build_common_run_config,
+    build_clean_sample_rows,
     build_manifest_prepare_extra,
     build_manifest_shift_log_lines,
     build_manifest_shift_summary,
@@ -87,6 +88,8 @@ def main() -> None:
     parser.add_argument("--wandb-mode", default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--wandb-log-images", action="store_true")
     parser.add_argument("--wandb-max-images", type=int, default=2)
+    parser.add_argument("--export-heatmaps", action="store_true")
+    parser.add_argument("--heatmap-max-images", type=int, default=2)
     args = parser.parse_args()
 
     manifest_paths_cli = list(args.manifest or [])
@@ -122,20 +125,28 @@ def main() -> None:
         resize=args.resize,
         imagesize=args.imagesize,
     )
-    anomaly_dataset = MultiFolderDataset(
-        [
-            data_root / args.category / "test" / "logical_anomalies",
-            data_root / args.category / "test" / "structural_anomalies",
-        ],
+    logical_anomaly_dataset = MultiFolderDataset(
+        [data_root / args.category / "test" / "logical_anomalies"],
         category=args.category,
         resize=args.resize,
         imagesize=args.imagesize,
     )
+    structural_anomaly_dataset = MultiFolderDataset(
+        [data_root / args.category / "test" / "structural_anomalies"],
+        category=args.category,
+        resize=args.resize,
+        imagesize=args.imagesize,
+    )
+    anomaly_count = len(logical_anomaly_dataset) + len(structural_anomaly_dataset)
     finish_phase(
         phase_logs,
         "dataset_setup",
         phase_started_at,
-        extra=f"train={len(train_dataset)} | clean={len(clean_dataset)} | anomaly={len(anomaly_dataset)}",
+        extra=(
+            f"train={len(train_dataset)} | clean={len(clean_dataset)} | "
+            f"logical={len(logical_anomaly_dataset)} | structural={len(structural_anomaly_dataset)} | "
+            f"anomaly={anomaly_count}"
+        ),
     )
 
     phase_started_at = time.perf_counter()
@@ -154,6 +165,14 @@ def main() -> None:
         extra=build_manifest_prepare_extra(run_spec),
     )
 
+    output_paths = prepare_output_paths(
+        output_root=args.output,
+        log_dir=args.log_dir,
+        category=args.category,
+        output_suffix=run_spec.output_suffix,
+    )
+    explainability_dir = output_paths.output_dir / "explainability" / args.category / run_spec.output_suffix
+
     phase_started_at = time.perf_counter()
     model = build_patchcore(device, args.imagesize, args.num_workers, args.sampler_percentage)
     finish_phase(phase_logs, "model_build", phase_started_at)
@@ -163,19 +182,34 @@ def main() -> None:
     finish_phase(phase_logs, "fit_train_good", phase_started_at, extra=f"samples={len(train_dataset)}")
 
     phase_started_at = time.perf_counter()
-    clean_scores, _, _, _ = model.predict(make_loader(clean_dataset, args.batch_size, args.num_workers))
+    clean_scores, clean_segmentations, _, _ = model.predict(make_loader(clean_dataset, args.batch_size, args.num_workers))
     clean_scores = [float(score) for score in clean_scores]
     finish_phase(phase_logs, "score_clean_good", phase_started_at, extra=f"samples={len(clean_dataset)}")
 
     phase_started_at = time.perf_counter()
-    anomaly_scores, _, _, _ = model.predict(make_loader(anomaly_dataset, args.batch_size, args.num_workers))
-    anomaly_scores = [float(score) for score in anomaly_scores]
+    logical_anomaly_scores, logical_anomaly_segmentations, _, _ = model.predict(
+        make_loader(logical_anomaly_dataset, args.batch_size, args.num_workers)
+    )
+    logical_anomaly_scores = [float(score) for score in logical_anomaly_scores]
     finish_phase(
         phase_logs,
-        "score_clean_anomaly",
+        "score_clean_logical_anomaly",
         phase_started_at,
-        extra=f"samples={len(anomaly_dataset)}",
+        extra=f"samples={len(logical_anomaly_dataset)}",
     )
+
+    phase_started_at = time.perf_counter()
+    structural_anomaly_scores, structural_anomaly_segmentations, _, _ = model.predict(
+        make_loader(structural_anomaly_dataset, args.batch_size, args.num_workers)
+    )
+    structural_anomaly_scores = [float(score) for score in structural_anomaly_scores]
+    finish_phase(
+        phase_logs,
+        "score_clean_structural_anomaly",
+        phase_started_at,
+        extra=f"samples={len(structural_anomaly_dataset)}",
+    )
+    anomaly_scores = logical_anomaly_scores + structural_anomaly_scores
 
     clean_threshold = max(clean_scores) if clean_scores else 0.0
     results = build_results_scaffold(
@@ -185,11 +219,54 @@ def main() -> None:
         clean_good=summarize_scores(clean_scores, clean_threshold),
         clean_anomaly=summarize_scores(anomaly_scores, clean_threshold),
         clean_image_auroc=compute_image_auroc(clean_scores, anomaly_scores),
+        clean_logical_anomaly=summarize_scores(logical_anomaly_scores, clean_threshold),
+        clean_structural_anomaly=summarize_scores(structural_anomaly_scores, clean_threshold),
+        clean_logical_image_auroc=compute_image_auroc(clean_scores, logical_anomaly_scores),
+        clean_structural_image_auroc=compute_image_auroc(clean_scores, structural_anomaly_scores),
     )
     results["clean_score_distributions"] = {
         "clean_normal_scores": clean_scores,
         "clean_anomaly_scores": anomaly_scores,
+        "clean_logical_anomaly_scores": logical_anomaly_scores,
+        "clean_structural_anomaly_scores": structural_anomaly_scores,
     }
+    if args.export_heatmaps:
+        clean_reference_maps: dict[str, list[dict[str, object]]] = {}
+        clean_reference_specs = [
+            ("clean_normal", clean_dataset.image_paths, clean_scores, clean_segmentations),
+            (
+                "logical_anomaly",
+                logical_anomaly_dataset.image_paths,
+                logical_anomaly_scores,
+                logical_anomaly_segmentations,
+            ),
+            (
+                "structural_anomaly",
+                structural_anomaly_dataset.image_paths,
+                structural_anomaly_scores,
+                structural_anomaly_segmentations,
+            ),
+        ]
+        for sample_type, image_paths, scores_for_split, segmentations_for_split in clean_reference_specs:
+            sample_rows = build_clean_sample_rows(
+                image_paths=image_paths,
+                scores=scores_for_split,
+                clean_good_mean=results["clean_good"]["mean"],
+                sample_type=sample_type,
+                max_items=args.heatmap_max_images,
+            )
+            heatmaps_by_index = {
+                int(row["source_index"]): segmentations_for_split[int(row["source_index"])]
+                for row in sample_rows
+            }
+            clean_reference_maps[sample_type] = attach_heatmap_artifacts(
+                sample_rows=sample_rows,
+                heatmaps_by_index=heatmaps_by_index,
+                artifact_dir=explainability_dir / "clean_reference" / sample_type,
+                artifact_prefix=f"patchcore_{sample_type}",
+                apply_shift=False,
+            )
+        results["clean_reference_maps"] = clean_reference_maps
     preview_images: dict[str, list[dict[str, object]]] = {}
 
     for aug_type, severity_groups in sorted(run_spec.grouped_entries.items()):
@@ -201,7 +278,7 @@ def main() -> None:
                 resize=args.resize,
                 imagesize=args.imagesize,
             )
-            scores, _, _, _ = model.predict(make_loader(dataset, args.batch_size, args.num_workers))
+            scores, segmentations, _, _ = model.predict(make_loader(dataset, args.batch_size, args.num_workers))
             scores = [float(score) for score in scores]
             summary = summarize_scores(scores, clean_threshold)
             summary["shifted_normal_fpr"] = summary["fpr_over_clean_max"]
@@ -209,16 +286,44 @@ def main() -> None:
             summary["median_score_shift"] = summary["median"] - results["clean_good"]["median"]
             summary["shifted_image_auroc"] = compute_image_auroc(scores, anomaly_scores)
             summary["image_auroc_vs_clean_anomaly"] = summary["shifted_image_auroc"]
+            summary["shifted_image_auroc_vs_logical_anomaly"] = compute_image_auroc(
+                scores,
+                logical_anomaly_scores,
+            )
+            summary["shifted_image_auroc_vs_structural_anomaly"] = compute_image_auroc(
+                scores,
+                structural_anomaly_scores,
+            )
             summary["image_auroc_drop_from_clean"] = (
                 results["clean_image_auroc"] - summary["shifted_image_auroc"]
+            )
+            summary["image_auroc_drop_from_clean_logical"] = (
+                results["clean_logical_image_auroc"]
+                - summary["shifted_image_auroc_vs_logical_anomaly"]
+            )
+            summary["image_auroc_drop_from_clean_structural"] = (
+                results["clean_structural_image_auroc"]
+                - summary["shifted_image_auroc_vs_structural_anomaly"]
             )
             summary["shifted_normal_scores"] = scores
             summary["sample_rows"] = build_shift_sample_rows(
                 entries=entries,
                 scores=scores,
                 clean_good_mean=results["clean_good"]["mean"],
-                max_items=max(DEFAULT_GALLERY_SAMPLE_LIMIT, args.wandb_max_images),
+                max_items=max(args.heatmap_max_images, args.wandb_max_images),
             )
+            if args.export_heatmaps:
+                heatmaps_by_index = {
+                    int(row["source_index"]): segmentations[int(row["source_index"])]
+                    for row in summary["sample_rows"]
+                }
+                summary["sample_rows"] = attach_heatmap_artifacts(
+                    sample_rows=summary["sample_rows"],
+                    heatmaps_by_index=heatmaps_by_index,
+                    artifact_dir=explainability_dir / "shifted" / aug_type / severity,
+                    artifact_prefix=f"patchcore_{aug_type}_{severity}",
+                    apply_shift=True,
+                )
             record_shift_cell(
                 results,
                 aug_type=aug_type,
@@ -238,12 +343,6 @@ def main() -> None:
                 extra=f"samples={len(dataset)}",
             )
 
-    output_paths = prepare_output_paths(
-        output_root=args.output,
-        log_dir=args.log_dir,
-        category=args.category,
-        output_suffix=run_spec.output_suffix,
-    )
     common_run_config = build_common_run_config(
         run_spec=run_spec,
         input_root=args.input_root,
@@ -257,6 +356,8 @@ def main() -> None:
             "batch_size": args.batch_size,
             "num_workers": args.num_workers,
             "sampler_percentage": args.sampler_percentage,
+            "export_heatmaps": args.export_heatmaps,
+            "heatmap_max_images": args.heatmap_max_images,
         },
     )
 

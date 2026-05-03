@@ -15,7 +15,9 @@ if str(CORE_DIR) not in sys.path:
 
 from manifest_shift_common import (  # noqa: E402
     THRESHOLD_POLICY_CLEAN_MAX,
+    build_clean_metric_snapshot,
     build_common_run_config,
+    build_results_scaffold,
     build_shift_metric_snapshot,
     prepare_manifest_shift_run_spec,
     prepare_output_paths,
@@ -186,6 +188,32 @@ class ManifestShiftCommonTests(unittest.TestCase):
             4.0,
             places=6,
         )
+
+    def test_clean_metric_snapshot_includes_logical_structural_split(self) -> None:
+        run_spec = prepare_manifest_shift_run_spec(
+            category="breakfast_box",
+            input_root="data/query_normal_clean",
+            manifest_paths=["manifests/query_motion_blur.jsonl"],
+        )
+        results = build_results_scaffold(
+            updated_at="2026-05-03 00:00:00 KST",
+            category="breakfast_box",
+            run_spec=run_spec,
+            clean_good=summarize_scores([0.1, 0.2], threshold=0.2),
+            clean_anomaly=summarize_scores([0.8, 0.9, 1.0], threshold=0.2),
+            clean_image_auroc=99.0,
+            clean_logical_anomaly=summarize_scores([0.8, 0.9], threshold=0.2),
+            clean_structural_anomaly=summarize_scores([1.0], threshold=0.2),
+            clean_logical_image_auroc=98.0,
+            clean_structural_image_auroc=100.0,
+        )
+
+        snapshot = build_clean_metric_snapshot(results)
+
+        self.assertEqual(snapshot["clean_logical_image_auroc"], 98.0)
+        self.assertEqual(snapshot["clean_structural_image_auroc"], 100.0)
+        self.assertAlmostEqual(snapshot["clean_logical_anomaly_mean"], 0.85)
+        self.assertAlmostEqual(snapshot["clean_structural_anomaly_mean"], 1.0)
 
 
 if __name__ == "__main__":

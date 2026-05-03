@@ -64,11 +64,11 @@ augmentations:
 
   - name: position_shift
     enabled: true
-    purpose: "translation sensitivity"
+    purpose: "shrink-and-place spatial sensitivity without cyclic wraparound"
     params:
-      low: { max_ratio: 0.03 }
-      medium: { max_ratio: 0.06 }
-      high: { max_ratio: 0.10 }
+      low: { center_shift_ratio: 0.03, placement: seeded_corner, fill_mode: border_median }
+      medium: { center_shift_ratio: 0.06, placement: seeded_corner, fill_mode: border_median }
+      high: { center_shift_ratio: 0.10, placement: seeded_corner, fill_mode: border_median }
 
   - name: low_light
     enabled: true

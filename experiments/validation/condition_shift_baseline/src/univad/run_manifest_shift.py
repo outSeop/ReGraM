@@ -55,8 +55,9 @@ from augmentation_runtime import apply_augmentation
 from contracts import write_log
 from external_loader import ensure_external_on_path
 from manifest_shift_common import (
-    DEFAULT_GALLERY_SAMPLE_LIMIT,
+    attach_heatmap_artifacts,
     build_clean_metric_snapshot,
+    build_clean_sample_rows,
     build_common_run_config,
     build_manifest_prepare_extra,
     build_manifest_shift_log_lines,
@@ -328,7 +329,7 @@ def amp_unsupported_error(exc: RuntimeError) -> bool:
     return "not implemented for 'Half'" in message or "not implemented for Half" in message
 
 
-def score_image_once(
+def predict_image_once(
     model,
     image: Image.Image,
     image_path: str,
@@ -338,7 +339,8 @@ def score_image_once(
     image_size: int,
     use_amp: bool,
     clear_cache: bool,
-) -> float:
+    return_map: bool = False,
+) -> tuple[float, np.ndarray | None]:
     batched, image_pil_list = pil_to_univad_inputs(
         image,
         image_size=image_size,
@@ -350,13 +352,46 @@ def score_image_once(
         with torch.inference_mode(), amp_context:
             pred = model(batched, image_path, image_pil_list)
         pred_score = pred["pred_score"]
-        return float(pred_score.item() if torch.is_tensor(pred_score) else pred_score)
+        score = float(pred_score.item() if torch.is_tensor(pred_score) else pred_score)
+        pred_map = None
+        if return_map:
+            pred_mask = pred.get("pred_mask")
+            if torch.is_tensor(pred_mask):
+                pred_map = pred_mask.detach().float().cpu().numpy()
+            elif pred_mask is not None:
+                pred_map = np.asarray(pred_mask, dtype=np.float32)
+        return score, pred_map
     finally:
         del batched
         del image_pil_list
         with contextlib.suppress(UnboundLocalError):
             del pred
         clear_cuda_cache(device, clear_cache)
+
+
+def score_image_once(
+    model,
+    image: Image.Image,
+    image_path: str,
+    transform,
+    device: torch.device,
+    *,
+    image_size: int,
+    use_amp: bool,
+    clear_cache: bool,
+) -> float:
+    score, _ = predict_image_once(
+        model,
+        image,
+        image_path,
+        transform,
+        device,
+        image_size=image_size,
+        use_amp=use_amp,
+        clear_cache=clear_cache,
+        return_map=False,
+    )
+    return score
 
 
 def score_image(
@@ -394,6 +429,46 @@ def score_image(
             image_size=image_size,
             use_amp=False,
             clear_cache=clear_cache,
+        )
+
+
+def score_image_with_map(
+    model,
+    image: Image.Image,
+    image_path: str,
+    transform,
+    device: torch.device,
+    *,
+    image_size: int,
+    use_amp: bool,
+    clear_cache: bool,
+) -> tuple[float, np.ndarray | None]:
+    try:
+        return predict_image_once(
+            model,
+            image,
+            image_path,
+            transform,
+            device,
+            image_size=image_size,
+            use_amp=use_amp,
+            clear_cache=clear_cache,
+            return_map=True,
+        )
+    except RuntimeError as exc:
+        if not use_amp or not amp_unsupported_error(exc):
+            raise
+        clear_cuda_cache(device, clear_cache)
+        return predict_image_once(
+            model,
+            image,
+            image_path,
+            transform,
+            device,
+            image_size=image_size,
+            use_amp=False,
+            clear_cache=clear_cache,
+            return_map=True,
         )
 
 
@@ -522,6 +597,8 @@ def main() -> None:
     parser.add_argument("--wandb-mode", default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--wandb-log-images", action="store_true")
     parser.add_argument("--wandb-max-images", type=int, default=2)
+    parser.add_argument("--export-heatmaps", action="store_true")
+    parser.add_argument("--heatmap-max-images", type=int, default=2)
     parser.add_argument(
         "--setup-timeout-sec",
         type=int,
@@ -596,13 +673,23 @@ def main() -> None:
         extra=build_manifest_prepare_extra(run_spec),
     )
 
+    output_paths = prepare_output_paths(
+        output_root=args.output,
+        log_dir=args.log_dir,
+        category=args.category,
+        output_suffix=run_spec.output_suffix,
+    )
+    explainability_dir = output_paths.output_dir / "explainability" / args.category / run_spec.output_suffix
+
     transform = build_transform(args.image_size)
     train_good_dir = data_root / args.category / "train" / "good"
     clean_good_dir = data_root / args.category / "test" / "good"
     logical_dir = data_root / args.category / "test" / "logical_anomalies"
     structural_dir = data_root / args.category / "test" / "structural_anomalies"
     clean_paths = sorted(clean_good_dir.glob("*.png"))
-    anomaly_paths = sorted(logical_dir.glob("*.png")) + sorted(structural_dir.glob("*.png"))
+    logical_anomaly_paths = sorted(logical_dir.glob("*.png"))
+    structural_anomaly_paths = sorted(structural_dir.glob("*.png"))
+    anomaly_paths = logical_anomaly_paths + structural_anomaly_paths
     reference_paths_for_masks = select_reference_paths(
         train_good_dir,
         k_shot=args.k_shot,
@@ -730,11 +817,11 @@ def main() -> None:
         )
 
         phase_started_at = time.perf_counter()
-        anomaly_scores: list[float] = []
-        for path in anomaly_paths:
+        logical_anomaly_scores: list[float] = []
+        for path in logical_anomaly_paths:
             with Image.open(path) as image_obj:
                 image = image_obj.convert("RGB")
-            anomaly_scores.append(
+            logical_anomaly_scores.append(
                 score_image(
                     model,
                     image,
@@ -748,10 +835,35 @@ def main() -> None:
             )
         finish_phase(
             phase_logs,
-            "score_clean_anomaly",
+            "score_clean_logical_anomaly",
             phase_started_at,
-            extra=f"samples={len(anomaly_paths)}",
+            extra=f"samples={len(logical_anomaly_paths)}",
         )
+
+        phase_started_at = time.perf_counter()
+        structural_anomaly_scores: list[float] = []
+        for path in structural_anomaly_paths:
+            with Image.open(path) as image_obj:
+                image = image_obj.convert("RGB")
+            structural_anomaly_scores.append(
+                score_image(
+                    model,
+                    image,
+                    str(path),
+                    transform,
+                    device,
+                    image_size=args.image_size,
+                    use_amp=effective_amp,
+                    clear_cache=clear_cache,
+                )
+            )
+        finish_phase(
+            phase_logs,
+            "score_clean_structural_anomaly",
+            phase_started_at,
+            extra=f"samples={len(structural_anomaly_paths)}",
+        )
+        anomaly_scores = logical_anomaly_scores + structural_anomaly_scores
 
         clean_threshold = max(clean_scores) if clean_scores else 0.0
         results = build_results_scaffold(
@@ -761,11 +873,58 @@ def main() -> None:
             clean_good=summarize_scores(clean_scores, clean_threshold),
             clean_anomaly=summarize_scores(anomaly_scores, clean_threshold),
             clean_image_auroc=compute_image_auroc(clean_scores, anomaly_scores),
+            clean_logical_anomaly=summarize_scores(logical_anomaly_scores, clean_threshold),
+            clean_structural_anomaly=summarize_scores(structural_anomaly_scores, clean_threshold),
+            clean_logical_image_auroc=compute_image_auroc(clean_scores, logical_anomaly_scores),
+            clean_structural_image_auroc=compute_image_auroc(clean_scores, structural_anomaly_scores),
         )
         results["clean_score_distributions"] = {
             "clean_normal_scores": clean_scores,
             "clean_anomaly_scores": anomaly_scores,
+            "clean_logical_anomaly_scores": logical_anomaly_scores,
+            "clean_structural_anomaly_scores": structural_anomaly_scores,
         }
+        if args.export_heatmaps:
+            clean_reference_maps: dict[str, list[dict[str, object]]] = {}
+            clean_reference_specs = [
+                ("clean_normal", clean_paths, clean_scores),
+                ("logical_anomaly", logical_anomaly_paths, logical_anomaly_scores),
+                ("structural_anomaly", structural_anomaly_paths, structural_anomaly_scores),
+            ]
+            for sample_type, image_paths_for_split, scores_for_split in clean_reference_specs:
+                sample_rows = build_clean_sample_rows(
+                    image_paths=image_paths_for_split,
+                    scores=scores_for_split,
+                    clean_good_mean=results["clean_good"]["mean"],
+                    sample_type=sample_type,
+                    max_items=args.heatmap_max_images,
+                )
+                heatmaps_by_index: dict[int, np.ndarray] = {}
+                for row in sample_rows:
+                    source_index = int(row["source_index"])
+                    image_path = image_paths_for_split[source_index]
+                    with Image.open(image_path) as image_obj:
+                        image = image_obj.convert("RGB")
+                    _, pred_map = score_image_with_map(
+                        model,
+                        image,
+                        str(image_path),
+                        transform,
+                        device,
+                        image_size=args.image_size,
+                        use_amp=effective_amp,
+                        clear_cache=clear_cache,
+                    )
+                    if pred_map is not None:
+                        heatmaps_by_index[source_index] = pred_map
+                clean_reference_maps[sample_type] = attach_heatmap_artifacts(
+                    sample_rows=sample_rows,
+                    heatmaps_by_index=heatmaps_by_index,
+                    artifact_dir=explainability_dir / "clean_reference" / sample_type,
+                    artifact_prefix=f"univad_{sample_type}",
+                    apply_shift=False,
+                )
+            results["clean_reference_maps"] = clean_reference_maps
 
         for aug_type, severity_groups in sorted(run_spec.grouped_entries.items()):
             for severity, entries in sorted(severity_groups.items()):
@@ -811,16 +970,71 @@ def main() -> None:
                     anomaly_scores,
                 )
                 summary["image_auroc_vs_clean_anomaly"] = summary["shifted_image_auroc"]
+                summary["shifted_image_auroc_vs_logical_anomaly"] = compute_image_auroc(
+                    shifted_scores,
+                    logical_anomaly_scores,
+                )
+                summary["shifted_image_auroc_vs_structural_anomaly"] = compute_image_auroc(
+                    shifted_scores,
+                    structural_anomaly_scores,
+                )
                 summary["image_auroc_drop_from_clean"] = (
                     results["clean_image_auroc"] - summary["shifted_image_auroc"]
+                )
+                summary["image_auroc_drop_from_clean_logical"] = (
+                    results["clean_logical_image_auroc"]
+                    - summary["shifted_image_auroc_vs_logical_anomaly"]
+                )
+                summary["image_auroc_drop_from_clean_structural"] = (
+                    results["clean_structural_image_auroc"]
+                    - summary["shifted_image_auroc_vs_structural_anomaly"]
                 )
                 summary["shifted_normal_scores"] = shifted_scores
                 summary["sample_rows"] = build_shift_sample_rows(
                     entries=entries,
                     scores=shifted_scores,
                     clean_good_mean=results["clean_good"]["mean"],
-                    max_items=max(DEFAULT_GALLERY_SAMPLE_LIMIT, args.wandb_max_images),
+                    max_items=max(args.heatmap_max_images, args.wandb_max_images),
                 )
+                if args.export_heatmaps:
+                    heatmaps_by_index: dict[int, np.ndarray] = {}
+                    for row in summary["sample_rows"]:
+                        source_index = int(row["source_index"])
+                        entry = entries[source_index]
+                        image_path = resolve_manifest_image_path(entry)
+                        with Image.open(image_path) as image_obj:
+                            image = image_obj.convert("RGB")
+                        image = apply_augmentation(
+                            image,
+                            augmentation_type=entry["augmentation_type"],
+                            severity=entry["severity"],
+                            seed=entry["seed"],
+                            params=entry["params"],
+                        )
+                        model_image_path = univad_data_path_for_image(
+                            image_path,
+                            data_root=data_root,
+                            category=args.category,
+                        )
+                        _, pred_map = score_image_with_map(
+                            model,
+                            image,
+                            str(model_image_path),
+                            transform,
+                            device,
+                            image_size=args.image_size,
+                            use_amp=effective_amp,
+                            clear_cache=clear_cache,
+                        )
+                        if pred_map is not None:
+                            heatmaps_by_index[source_index] = pred_map
+                    summary["sample_rows"] = attach_heatmap_artifacts(
+                        sample_rows=summary["sample_rows"],
+                        heatmaps_by_index=heatmaps_by_index,
+                        artifact_dir=explainability_dir / "shifted" / aug_type / severity,
+                        artifact_prefix=f"univad_{aug_type}_{severity}",
+                        apply_shift=True,
+                    )
                 record_shift_cell(
                     results,
                     aug_type=aug_type,
@@ -840,12 +1054,6 @@ def main() -> None:
                     extra=f"samples={len(entries)}",
                 )
 
-    output_paths = prepare_output_paths(
-        output_root=args.output,
-        log_dir=args.log_dir,
-        category=args.category,
-        output_suffix=run_spec.output_suffix,
-    )
     common_run_config = build_common_run_config(
         run_spec=run_spec,
         input_root=args.input_root,
@@ -864,6 +1072,8 @@ def main() -> None:
             "cuda_empty_cache": clear_cache,
             "setup_timeout_sec": args.setup_timeout_sec,
             "setup_re_seg": args.setup_re_seg,
+            "export_heatmaps": args.export_heatmaps,
+            "heatmap_max_images": args.heatmap_max_images,
         },
     )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib
 import os
 import shutil
@@ -71,7 +72,7 @@ def collect_missing_checkpoint_files(spec: dict[str, Any]) -> list[str]:
     return [
         filename
         for filename in spec.get("required_checkpoint_files", [])
-        if not (checkpoint_root / filename).exists()
+        if not checkpoint_file_ready(spec, filename)
     ]
 
 
@@ -435,14 +436,25 @@ def build_checkpoint_status_rows(spec: dict[str, Any]) -> list[dict[str, Any]]:
     if checkpoint_root is None:
         return []
     return [
-        {
-            "baseline": "UniVAD",
-            "checkpoint_file": filename,
-            "exists": (checkpoint_root / filename).exists(),
-            "path": str(checkpoint_root / filename),
-        }
+        _build_checkpoint_status_row(spec, filename)
         for filename in spec.get("required_checkpoint_files", [])
     ]
+
+
+def _build_checkpoint_status_row(spec: dict[str, Any], filename: str) -> dict[str, Any]:
+    checkpoint_root = spec.get("checkpoint_root")
+    checkpoint_path = checkpoint_root / filename
+    expected_bytes = spec.get("checkpoint_expected_bytes", {}).get(filename)
+    actual_bytes = checkpoint_path.stat().st_size if checkpoint_path.exists() else 0
+    return {
+        "baseline": "UniVAD",
+        "checkpoint_file": filename,
+        "exists": checkpoint_path.exists(),
+        "ready": checkpoint_file_ready(spec, filename),
+        "actual_bytes": actual_bytes,
+        "expected_bytes": expected_bytes or "-",
+        "path": str(checkpoint_path),
+    }
 
 
 def build_dataset_status_rows(spec: dict[str, Any], categories: list[str]) -> list[dict[str, Any]]:
@@ -524,9 +536,133 @@ def ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def download_file(url: str, destination: Path) -> None:
+def checkpoint_file_ready(spec: dict[str, Any], filename: str) -> bool:
+    checkpoint_root = spec.get("checkpoint_root")
+    if checkpoint_root is None:
+        return False
+    checkpoint_path = checkpoint_root / filename
+    if not checkpoint_path.exists():
+        return False
+    expected_bytes = spec.get("checkpoint_expected_bytes", {}).get(filename)
+    if expected_bytes is not None and checkpoint_path.stat().st_size != int(expected_bytes):
+        return False
+    return True
+
+
+def checkpoint_download_urls(spec: dict[str, Any], filename: str) -> list[str]:
+    urls = spec.get("checkpoint_download_urls", {}).get(filename)
+    if urls is None:
+        return []
+    if isinstance(urls, str):
+        return [urls]
+    return [str(url) for url in urls]
+
+
+def compute_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_downloaded_file(
+    path: Path,
+    *,
+    expected_bytes: int | None = None,
+    expected_sha256: str | None = None,
+) -> None:
+    if not path.exists():
+        raise RuntimeError(f"download did not create file: {path}")
+    actual_bytes = path.stat().st_size
+    if expected_bytes is not None and actual_bytes != int(expected_bytes):
+        raise RuntimeError(
+            f"downloaded file size mismatch for {path.name}: "
+            f"actual={actual_bytes}, expected={expected_bytes}"
+        )
+    if expected_sha256 is not None:
+        actual_sha256 = compute_sha256(path)
+        if actual_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"downloaded file sha256 mismatch for {path.name}: "
+                f"actual={actual_sha256}, expected={expected_sha256}"
+            )
+
+
+def download_file(
+    urls: str | list[str],
+    destination: Path,
+    *,
+    expected_bytes: int | None = None,
+    expected_sha256: str | None = None,
+) -> None:
     ensure_directory(destination.parent)
-    subprocess.run(["curl", "-L", "--fail", "-o", str(destination), url], check=True)
+    url_candidates = [urls] if isinstance(urls, str) else list(urls)
+    if not url_candidates:
+        raise RuntimeError(f"no download URL configured for {destination.name}")
+
+    part_path = destination.with_name(destination.name + ".part")
+    if part_path.exists():
+        try:
+            validate_downloaded_file(
+                part_path,
+                expected_bytes=expected_bytes,
+                expected_sha256=expected_sha256,
+            )
+            part_path.replace(destination)
+            return
+        except Exception:  # noqa: BLE001
+            if expected_bytes is None or part_path.stat().st_size >= int(expected_bytes):
+                part_path.unlink()
+            pass
+
+    failures: list[str] = []
+    for url in url_candidates:
+        print(f"download from: {url}")
+        command = [
+            "curl",
+            "-L",
+            "--fail",
+            "--retry",
+            "6",
+            "--retry-delay",
+            "10",
+            "--retry-max-time",
+            "1800",
+            "--connect-timeout",
+            "30",
+            "--speed-time",
+            "120",
+            "--speed-limit",
+            "1024",
+            "-C",
+            "-",
+            "-o",
+            str(part_path),
+            url,
+        ]
+        result = subprocess.run(command, check=False)
+        if result.returncode != 0:
+            failures.append(f"{url} -> curl exit {result.returncode}")
+            continue
+        try:
+            validate_downloaded_file(
+                part_path,
+                expected_bytes=expected_bytes,
+                expected_sha256=expected_sha256,
+            )
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{url} -> {type(exc).__name__}: {exc}")
+            try:
+                part_path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        part_path.replace(destination)
+        return
+
+    failure_text = " | ".join(failures) if failures else "all download attempts failed"
+    raise RuntimeError(f"failed to download {destination.name}: {failure_text}")
 
 
 def ensure_symlink(src: Path, dst: Path) -> None:
@@ -890,12 +1026,24 @@ def maybe_download_univad_checkpoints(spec: dict[str, Any], settings: dict[str, 
     if not settings["download_missing_univad_checkpoints"]:
         return downloaded
     for filename in collect_missing_checkpoint_files(spec):
-        url = spec["checkpoint_download_urls"].get(filename)
-        if not url:
+        urls = checkpoint_download_urls(spec, filename)
+        if not urls:
             continue
         destination = checkpoint_root / filename
-        print(f"download checkpoint: {filename} <- {url}")
-        download_file(url, destination)
+        expected_bytes = spec.get("checkpoint_expected_bytes", {}).get(filename)
+        expected_sha256 = spec.get("checkpoint_sha256", {}).get(filename)
+        if destination.exists() and expected_bytes is not None:
+            print(
+                f"checkpoint exists but is incomplete or unexpected size: "
+                f"{filename} actual={destination.stat().st_size} expected={expected_bytes}"
+            )
+        print(f"download checkpoint: {filename}")
+        download_file(
+            urls,
+            destination,
+            expected_bytes=expected_bytes,
+            expected_sha256=expected_sha256,
+        )
         downloaded.append(filename)
     return downloaded
 

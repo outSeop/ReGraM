@@ -40,6 +40,7 @@ except ModuleNotFoundError:  # pragma: no cover - used only in non-notebook loca
 
 
 SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2}
+SEVERITY_ALIASES = {"middle": "medium", "mid": "medium"}
 
 
 def now_string() -> str:
@@ -149,6 +150,7 @@ def display_run_plan(run_configs: list[dict[str, Any]]) -> None:
                 "baseline": config["baseline"],
                 "category": config["category"],
                 "manifest_count": len(config["manifest_paths"]),
+                "severities": ", ".join(config.get("selected_severities", [])) or "all",
                 "summary_name": config["summary_path"].name,
                 "device": config["device"],
                 "wandb": "on" if config.get("use_wandb") else "off",
@@ -233,7 +235,7 @@ def build_baseline_specs(
             "wandb_group": "patchcore",
             "wandb_log_images": True,
             "wandb_max_images": 2,
-            "extra_args": [],
+            "extra_args": ["--export-heatmaps", "--heatmap-max-images", "2"],
             "notes": "PatchCore runner consumes raw LOCO directly and falls back to CPU automatically.",
         },
         "UniVAD": {
@@ -260,10 +262,21 @@ def build_baseline_specs(
             "required_checkpoint_files": ["sam_hq_vit_h.pth", "groundingdino_swint_ogc.pth"],
             "checkpoint_download_urls": {
                 "sam_hq_vit_h.pth": "https://huggingface.co/lkeab/hq-sam/resolve/main/sam_hq_vit_h.pth",
-                "groundingdino_swint_ogc.pth": (
-                    "https://github.com/IDEA-Research/GroundingDINO/releases/download/"
-                    "v0.1.0-alpha/groundingdino_swint_ogc.pth"
-                ),
+                "groundingdino_swint_ogc.pth": [
+                    (
+                        "https://github.com/IDEA-Research/GroundingDINO/releases/download/"
+                        "v0.1.0-alpha/groundingdino_swint_ogc.pth"
+                    ),
+                    "https://huggingface.co/ShilongLiu/GroundingDINO/resolve/main/groundingdino_swint_ogc.pth",
+                ],
+            },
+            "checkpoint_expected_bytes": {
+                "sam_hq_vit_h.pth": 2_570_940_653,
+                "groundingdino_swint_ogc.pth": 693_997_677,
+            },
+            "checkpoint_sha256": {
+                "sam_hq_vit_h.pth": "a7ac14a085326d9fa6199c8c698c4f0e7280afdbb974d2c4660ec60877b45e35",
+                "groundingdino_swint_ogc.pth": "3b3ca2563c77c69f651d7bd133e97139c186df06231157a64c507099c52bc799",
             },
             "required_data_paths": ["meta.json"],
             "required_mask_paths": [
@@ -276,7 +289,18 @@ def build_baseline_specs(
             "wandb_group": "univad",
             "wandb_log_images": True,
             "wandb_max_images": 2,
-            "extra_args": univad_extra_args or ["--image-size", "224", "--k-shot", "1", "--round", "0"],
+            "extra_args": univad_extra_args
+            or [
+                "--image-size",
+                "224",
+                "--k-shot",
+                "1",
+                "--round",
+                "0",
+                "--export-heatmaps",
+                "--heatmap-max-images",
+                "2",
+            ],
             "notes": (
                 "UniVAD needs CUDA, recursive clone/submodules, MVTec-Caption style LOCO data, "
                 "precomputed grounding masks, editable GroundingDINO, and local checkpoints."
@@ -314,8 +338,11 @@ def discover_manifest_names(
     auto_discover: bool,
     excluded_names: set[str],
 ) -> list[str]:
+    selected_names = [name for name in configured_names if name not in excluded_names]
+    if selected_names:
+        return selected_names
     if not auto_discover:
-        return list(configured_names)
+        return []
     discovered: list[str] = []
     for root in manifest_roots:
         if root.exists():
@@ -337,6 +364,38 @@ def resolve_manifest_paths(manifest_names: list[str], manifest_roots: list[Path]
     return manifest_paths
 
 
+def normalize_selected_severities(severities: list[str] | tuple[str, ...] | None) -> list[str]:
+    if not severities:
+        return []
+    normalized: list[str] = []
+    for raw_value in severities:
+        value = str(raw_value).strip().lower()
+        if not value or value == "all":
+            return []
+        value = SEVERITY_ALIASES.get(value, value)
+        if value not in SEVERITY_ORDER:
+            raise ValueError(
+                f"Unsupported severity: {raw_value}. "
+                "Use one or more of: low, medium, high. Alias: middle -> medium."
+            )
+        if value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def derive_run_output_suffix(manifest_names: list[str], selected_severities: list[str]) -> str:
+    if len(manifest_names) == 1:
+        manifest_name = manifest_names[0]
+        if manifest_name.startswith("query_") and manifest_name.endswith(".jsonl"):
+            shift_family = manifest_name[len("query_") : -len(".jsonl")]
+        else:
+            shift_family = Path(manifest_name).stem
+    else:
+        shift_family = "multi"
+    severity_label = selected_severities[0] if len(selected_severities) == 1 else "multi" if selected_severities else "all"
+    return f"{shift_family}_{severity_label}"
+
+
 def build_requested_run_configs(
     *,
     active_baselines: list[str],
@@ -347,13 +406,16 @@ def build_requested_run_configs(
     report_root: Path,
     wandb_project: str,
     wandb_mode: str,
+    selected_severities: list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     configs: list[dict[str, Any]] = []
+    normalized_severities = normalize_selected_severities(selected_severities)
+    output_suffix = derive_run_output_suffix(manifest_names, normalized_severities)
     for baseline in active_baselines:
         spec = specs[baseline]
         for category in categories:
-            summary_path = report_root / spec["report_subdir"] / f"{category}_multi_all.json"
-            log_path = report_root / spec["report_subdir"] / "logs" / f"{category}_multi_all.log.txt"
+            summary_path = report_root / spec["report_subdir"] / f"{category}_{output_suffix}.json"
+            log_path = report_root / spec["report_subdir"] / "logs" / f"{category}_{output_suffix}.log.txt"
             runner_cmd = [
                 sys.executable,
                 str(spec["runner_path"]),
@@ -367,6 +429,8 @@ def build_requested_run_configs(
                 spec["device"],
                 *spec["extra_args"],
             ]
+            if normalized_severities:
+                runner_cmd.extend(["--severities", *normalized_severities])
             if spec["use_wandb"]:
                 runner_cmd.extend(
                     [
@@ -389,6 +453,7 @@ def build_requested_run_configs(
                     "data_root": str(spec["data_root"]),
                     "manifest_paths": list(manifest_paths),
                     "manifest_names": list(manifest_names),
+                    "selected_severities": list(normalized_severities),
                     "summary_path": summary_path,
                     "log_path": log_path,
                     "runner_cmd": runner_cmd,
@@ -435,6 +500,11 @@ def display_experiment_preset(
                     "dashboard_baselines": ", ".join(dashboard_baselines),
                     "category_count": len(categories),
                     "manifest_count": len(manifest_names),
+                    "selected_severities": ", ".join(
+                        requested_run_configs[0].get("selected_severities", [])
+                    )
+                    if requested_run_configs and requested_run_configs[0].get("selected_severities")
+                    else "all",
                     "wandb_mode": wandb_mode,
                     "stop_on_failure": stop_on_failure,
                     **univad_flags,

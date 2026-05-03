@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,8 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 
-from augmentation_runtime import build_manifest_entries, load_manifest
+from augmentation_runtime import apply_augmentation, build_manifest_entries, load_manifest
 from contracts import build_summary, write_summary
 from repo_paths import REPO_ROOT
 from wandb_utils import (
@@ -216,8 +218,12 @@ def build_results_scaffold(
     clean_good: dict[str, Any],
     clean_anomaly: dict[str, Any],
     clean_image_auroc: float,
+    clean_logical_anomaly: dict[str, Any] | None = None,
+    clean_structural_anomaly: dict[str, Any] | None = None,
+    clean_logical_image_auroc: float | None = None,
+    clean_structural_image_auroc: float | None = None,
 ) -> dict[str, Any]:
-    return {
+    results = {
         "updated_at": updated_at,
         "category": category,
         "manifest": run_spec.manifest_repr,
@@ -234,6 +240,15 @@ def build_results_scaffold(
         "clean_image_auroc": clean_image_auroc,
         "augmentations": {},
     }
+    if clean_logical_anomaly is not None:
+        results["clean_logical_anomaly"] = clean_logical_anomaly
+    if clean_structural_anomaly is not None:
+        results["clean_structural_anomaly"] = clean_structural_anomaly
+    if clean_logical_image_auroc is not None:
+        results["clean_logical_image_auroc"] = clean_logical_image_auroc
+    if clean_structural_image_auroc is not None:
+        results["clean_structural_image_auroc"] = clean_structural_image_auroc
+    return results
 
 
 def record_shift_cell(
@@ -258,10 +273,16 @@ def build_shift_sample_rows(
     from manifest_paths import resolve_manifest_image_path  # noqa: WPS433
 
     rows: list[dict[str, Any]] = []
-    for entry, score in list(zip(entries, scores, strict=False))[:max_items]:
+    scored_entries = sorted(
+        enumerate(zip(entries, scores, strict=False)),
+        key=lambda item: float(item[1][1]),
+        reverse=True,
+    )
+    for source_index, (entry, score) in scored_entries[:max_items]:
         image_path = resolve_manifest_image_path(entry)
         rows.append(
             {
+                "source_index": int(source_index),
                 "source_id": entry.get("source_id"),
                 "image_path": str(image_path),
                 "image_name": Path(image_path).name,
@@ -274,6 +295,120 @@ def build_shift_sample_rows(
             }
         )
     return rows
+
+
+def build_clean_sample_rows(
+    *,
+    image_paths: list[Path],
+    scores: list[float],
+    clean_good_mean: float,
+    sample_type: str,
+    max_items: int = DEFAULT_GALLERY_SAMPLE_LIMIT,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    scored_paths = sorted(
+        enumerate(zip(image_paths, scores, strict=False)),
+        key=lambda item: float(item[1][1]),
+        reverse=True,
+    )
+    for source_index, (image_path, score) in scored_paths[:max_items]:
+        rows.append(
+            {
+                "source_index": int(source_index),
+                "source_id": Path(image_path).stem,
+                "image_path": str(image_path),
+                "image_name": Path(image_path).name,
+                "sample_type": sample_type,
+                "score": float(score),
+                "score_delta_from_clean_mean": float(score - clean_good_mean),
+            }
+        )
+    return rows
+
+
+def _normalize_heatmap_array(heatmap: Any) -> np.ndarray:
+    array = np.asarray(heatmap, dtype=np.float32)
+    array = np.squeeze(array)
+    if array.ndim == 3:
+        array = array.mean(axis=0) if array.shape[0] <= 4 else array.mean(axis=2)
+    if array.ndim != 2:
+        raise ValueError(f"Expected 2D heatmap after squeeze, got shape={array.shape}")
+    finite = array[np.isfinite(array)]
+    if finite.size == 0:
+        return np.zeros(array.shape, dtype=np.float32)
+    low, high = float(finite.min()), float(finite.max())
+    if high <= low:
+        return np.zeros(array.shape, dtype=np.float32)
+    return np.clip((array - low) / (high - low), 0.0, 1.0)
+
+
+def _heatmap_to_rgb(heatmap: Any, size: tuple[int, int]) -> Image.Image:
+    normalized = _normalize_heatmap_array(heatmap)
+    red = (normalized * 255.0).astype(np.uint8)
+    green = (np.clip((normalized - 0.35) / 0.65, 0.0, 1.0) * 255.0).astype(np.uint8)
+    blue = ((1.0 - normalized) * 40.0).astype(np.uint8)
+    rgb = np.stack([red, green, blue], axis=2)
+    return Image.fromarray(rgb, mode="RGB").resize(size, resample=Image.Resampling.BILINEAR)
+
+
+def _safe_artifact_name(*parts: Any) -> str:
+    raw = "_".join(str(part) for part in parts if part is not None and str(part))
+    return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in raw)
+
+
+def _relative_artifact_path(path: Path) -> str:
+    with contextlib.suppress(ValueError):
+        return str(path.resolve().relative_to(REPO_ROOT))
+    return str(path)
+
+
+def attach_heatmap_artifacts(
+    *,
+    sample_rows: list[dict[str, Any]],
+    heatmaps_by_index: dict[int, Any],
+    artifact_dir: Path,
+    artifact_prefix: str,
+    apply_shift: bool,
+    alpha: float = 0.45,
+) -> list[dict[str, Any]]:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    updated_rows: list[dict[str, Any]] = []
+    for rank, row in enumerate(sample_rows):
+        updated = dict(row)
+        source_index = int(row.get("source_index", rank))
+        heatmap = heatmaps_by_index.get(source_index)
+        if heatmap is None:
+            updated_rows.append(updated)
+            continue
+
+        image_path = Path(row["image_path"])
+        with Image.open(image_path) as image_obj:
+            base_image = image_obj.convert("RGB")
+        if apply_shift:
+            base_image = apply_augmentation(
+                base_image,
+                augmentation_type=row["augmentation_type"],
+                severity=row["severity"],
+                seed=int(row.get("seed", 0) or 0),
+                params=dict(row.get("params", {})),
+            )
+
+        heatmap_image = _heatmap_to_rgb(heatmap, base_image.size)
+        overlay = Image.blend(base_image, heatmap_image, alpha=alpha)
+        artifact_stem = _safe_artifact_name(
+            artifact_prefix,
+            rank,
+            row.get("sample_type"),
+            row.get("source_id") or image_path.stem,
+        )
+        heatmap_path = artifact_dir / f"{artifact_stem}_heatmap.png"
+        overlay_path = artifact_dir / f"{artifact_stem}_overlay.png"
+        heatmap_image.save(heatmap_path)
+        overlay.save(overlay_path)
+        updated["heatmap_path"] = _relative_artifact_path(heatmap_path)
+        updated["overlay_path"] = _relative_artifact_path(overlay_path)
+        updated_rows.append(updated)
+    return updated_rows
 
 
 def prepare_output_paths(
@@ -332,7 +467,7 @@ def build_common_run_config(
 def build_clean_metric_snapshot(results: dict[str, Any]) -> dict[str, Any]:
     clean_good = results["clean_good"]
     clean_anomaly = results["clean_anomaly"]
-    return {
+    snapshot = {
         "clean_image_auroc": results["clean_image_auroc"],
         "clean_good_mean": clean_good["mean"],
         "clean_good_median": clean_good["median"],
@@ -341,6 +476,27 @@ def build_clean_metric_snapshot(results: dict[str, Any]) -> dict[str, Any]:
         "clean_anomaly_median": clean_anomaly["median"],
         "clean_anomaly_fpr_over_clean_max": clean_anomaly["fpr_over_clean_max"],
     }
+    clean_logical = results.get("clean_logical_anomaly")
+    if clean_logical:
+        snapshot.update(
+            {
+                "clean_logical_image_auroc": results.get("clean_logical_image_auroc"),
+                "clean_logical_anomaly_mean": clean_logical["mean"],
+                "clean_logical_anomaly_median": clean_logical["median"],
+                "clean_logical_anomaly_fpr_over_clean_max": clean_logical["fpr_over_clean_max"],
+            }
+        )
+    clean_structural = results.get("clean_structural_anomaly")
+    if clean_structural:
+        snapshot.update(
+            {
+                "clean_structural_image_auroc": results.get("clean_structural_image_auroc"),
+                "clean_structural_anomaly_mean": clean_structural["mean"],
+                "clean_structural_anomaly_median": clean_structural["median"],
+                "clean_structural_anomaly_fpr_over_clean_max": clean_structural["fpr_over_clean_max"],
+            }
+        )
+    return snapshot
 
 
 def build_shift_metric_snapshot(results: dict[str, Any]) -> dict[str, Any]:

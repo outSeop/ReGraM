@@ -6,7 +6,7 @@ import random
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageChops, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter
 
 
 DEFAULT_SEVERITIES = ("low", "medium", "high")
@@ -59,9 +59,21 @@ _FALLBACK_DEFAULT_PARAMS = {
         "high": {"scale": 0.33},
     },
     "position_shift": {
-        "low": {"max_ratio": 0.03},
-        "medium": {"max_ratio": 0.06},
-        "high": {"max_ratio": 0.10},
+        "low": {
+            "center_shift_ratio": 0.03,
+            "placement": "seeded_corner",
+            "fill_mode": "border_median",
+        },
+        "medium": {
+            "center_shift_ratio": 0.06,
+            "placement": "seeded_corner",
+            "fill_mode": "border_median",
+        },
+        "high": {
+            "center_shift_ratio": 0.10,
+            "placement": "seeded_corner",
+            "fill_mode": "border_median",
+        },
     },
     "low_light": {
         "low": {"brightness": 0.75, "contrast": 0.85},
@@ -215,6 +227,116 @@ def _apply_horizontal_motion_blur(image: Image.Image, size: int) -> Image.Image:
     return _from_numpy(shifted_sum / size)
 
 
+_POSITION_CORNER_PLACEMENTS = ("top_left", "top_right", "bottom_left", "bottom_right")
+
+
+def _position_shift_scale(params: dict) -> float:
+    if "scale" in params:
+        scale = float(params["scale"])
+    else:
+        # Backward compatibility: older manifests stored max_ratio for the
+        # previous cyclic offset implementation. Reinterpret it as the desired
+        # center displacement, then shrink enough to place the full image
+        # without wraparound or cropping.
+        center_shift_ratio = float(
+            params.get("center_shift_ratio", params.get("max_ratio", 0.0))
+        )
+        scale = 1.0 - (2.0 * center_shift_ratio)
+    return min(1.0, max(0.05, scale))
+
+
+def _resolve_position_shift_placement(params: dict, seed: int) -> str:
+    placement = params.get("placement", params.get("anchor", "seeded_corner"))
+    if isinstance(placement, list):
+        candidates = tuple(str(item) for item in placement)
+        if not candidates:
+            raise ValueError("position_shift placement list cannot be empty")
+        return random.Random(seed).choice(candidates)
+    if placement in {"seeded_corner", "random_corner"}:
+        return random.Random(seed).choice(_POSITION_CORNER_PLACEMENTS)
+    return str(placement)
+
+
+def _resolve_position_shift_fill(image: Image.Image, params: dict) -> tuple[int, int, int]:
+    fill_color = params.get("fill_color")
+    if fill_color is not None:
+        if isinstance(fill_color, str):
+            named = {
+                "black": (0, 0, 0),
+                "white": (255, 255, 255),
+                "gray": (127, 127, 127),
+                "grey": (127, 127, 127),
+            }
+            if fill_color not in named:
+                raise ValueError(f"Unsupported position_shift fill_color: {fill_color}")
+            return named[fill_color]
+        if len(fill_color) != 3:
+            raise ValueError("position_shift fill_color must have three channels")
+        return tuple(int(value) for value in fill_color)
+
+    fill_mode = params.get("fill_mode", "border_median")
+    if fill_mode == "black":
+        return (0, 0, 0)
+    if fill_mode == "white":
+        return (255, 255, 255)
+    if fill_mode != "border_median":
+        raise ValueError(f"Unsupported position_shift fill_mode: {fill_mode}")
+
+    array = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    border = np.concatenate(
+        [
+            array[0, :, :],
+            array[-1, :, :],
+            array[:, 0, :],
+            array[:, -1, :],
+        ],
+        axis=0,
+    )
+    return tuple(int(value) for value in np.median(border, axis=0))
+
+
+def _position_shift_offset(
+    image_size: tuple[int, int],
+    shifted_size: tuple[int, int],
+    placement: str,
+) -> tuple[int, int]:
+    width, height = image_size
+    shifted_width, shifted_height = shifted_size
+    max_x = width - shifted_width
+    max_y = height - shifted_height
+    offsets = {
+        "top_left": (0, 0),
+        "top_right": (max_x, 0),
+        "bottom_left": (0, max_y),
+        "bottom_right": (max_x, max_y),
+        "center": (max_x // 2, max_y // 2),
+    }
+    if placement not in offsets:
+        raise ValueError(
+            "Unsupported position_shift placement: "
+            f"{placement}. Expected one of {sorted(offsets)} or seeded_corner."
+        )
+    return offsets[placement]
+
+
+def _apply_position_shift(image: Image.Image, *, seed: int, params: dict) -> Image.Image:
+    image = image.convert("RGB")
+    width, height = image.size
+    scale = _position_shift_scale(params)
+    shifted_size = (
+        max(1, min(width, int(round(width * scale)))),
+        max(1, min(height, int(round(height * scale)))),
+    )
+    placement = _resolve_position_shift_placement(params, seed)
+    offset = _position_shift_offset(image.size, shifted_size, placement)
+    fill = _resolve_position_shift_fill(image, params)
+
+    shifted = image.resize(shifted_size, resample=Image.Resampling.BICUBIC)
+    canvas = Image.new("RGB", image.size, fill)
+    canvas.paste(shifted, offset)
+    return canvas
+
+
 def apply_augmentation(
     image: Image.Image,
     *,
@@ -260,13 +382,7 @@ def apply_augmentation(
         return downsampled.resize((width, height), resample=Image.Resampling.BICUBIC)
 
     if augmentation_type == "position_shift":
-        rng = random.Random(seed)
-        width, height = image.size
-        max_dx = int(width * params["max_ratio"])
-        max_dy = int(height * params["max_ratio"])
-        dx = rng.randint(-max_dx, max_dx)
-        dy = rng.randint(-max_dy, max_dy)
-        return ImageChops.offset(image, dx, dy)
+        return _apply_position_shift(image, seed=seed, params=params)
 
     if augmentation_type == "low_light":
         output = ImageEnhance.Brightness(image).enhance(params["brightness"])
