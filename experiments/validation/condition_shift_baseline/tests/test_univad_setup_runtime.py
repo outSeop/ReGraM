@@ -15,6 +15,7 @@ for import_dir in (SRC_DIR, SRC_DIR / "core", SRC_DIR / "orchestration"):
 
 from univad import setup_runtime as setup_runtime_module  # noqa: E402
 from univad.setup_runtime import (  # noqa: E402
+    _dependency_restart_note,
     checkpoint_download_urls,
     checkpoint_file_ready,
     collect_univad_missing_mask_image_paths,
@@ -90,6 +91,20 @@ class UniVADSetupRuntimeTests(unittest.TestCase):
                 sys.modules.pop("transformers.utils.generic", None)
             else:
                 sys.modules["transformers.utils.generic"] = previous_generic
+
+    def test_dependency_restart_note_combines_all_restart_reasons(self) -> None:
+        note = _dependency_restart_note(
+            [
+                ("runtime_dependency_unavailable", {"restart_required": True, "note": "runtime deps installed"}),
+                ("torch_stack_unavailable", {"restart_required": True, "note": "torch stack installed"}),
+                ("transformers_stack_unavailable", {"restart_required": False, "note": "already compatible"}),
+            ]
+        )
+
+        self.assertIn("restart runtime once", note)
+        self.assertIn("runtime_dependency_unavailable: runtime deps installed", note)
+        self.assertIn("torch_stack_unavailable: torch stack installed", note)
+        self.assertNotIn("already compatible", note)
 
     def test_grounding_mask_generation_skips_complete_categories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

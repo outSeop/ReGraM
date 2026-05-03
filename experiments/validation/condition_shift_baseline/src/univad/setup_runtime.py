@@ -1353,6 +1353,18 @@ def _blocked_from_status(
     return None
 
 
+def _dependency_restart_note(statuses: list[tuple[str, dict[str, Any]]]) -> str:
+    restart_notes = [
+        f"{reason}: {status['note']}"
+        for reason, status in statuses
+        if status.get("restart_required")
+    ]
+    return (
+        "installed/updated UniVAD dependency stack(s); restart runtime once and rerun "
+        f"notebook from the top. Details: {' | '.join(restart_notes)}"
+    )
+
+
 def setup_univad(
     spec: dict[str, Any],
     *,
@@ -1383,8 +1395,28 @@ def setup_univad(
         (maybe_fix_univad_torch_stack, "torch_stack_unavailable"),
         (maybe_fix_univad_transformers_stack, "transformers_stack_unavailable"),
     ]
+    dependency_statuses: list[tuple[str, dict[str, Any]]] = []
     for check_dependency_stack, unavailable_reason in dependency_checks:
         status = check_dependency_stack(settings)
+        dependency_statuses.append((unavailable_reason, status))
+    if any(status.get("restart_required") for _, status in dependency_statuses):
+        return build_univad_setup_blocked_row(
+            spec,
+            univad_dir=univad_dir,
+            groundingdino_dir=groundingdino_dir,
+            checkpoint_root=checkpoint_root,
+            missing_local_paths=missing_local_paths,
+            caption_dataset_prepared=caption_dataset_prepared,
+            downloaded_checkpoint_files=downloaded_checkpoint_files,
+            mask_restore_status=mask_restore_status,
+            mask_backup_status=mask_backup_status,
+            setup_status="restart_required",
+            mask_generation_reason="runtime_restart_required",
+            mask_generation_error="-",
+            note=_dependency_restart_note(dependency_statuses),
+            settings=settings,
+        )
+    for unavailable_reason, status in dependency_statuses:
         blocked_row = _blocked_from_status(
             status,
             spec,
