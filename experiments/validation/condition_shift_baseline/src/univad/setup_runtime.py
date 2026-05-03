@@ -952,8 +952,37 @@ def maybe_fix_univad_torch_stack(settings: dict[str, Any]) -> dict[str, Any]:
     return status
 
 
+def write_univad_runtime_constraints() -> Path:
+    constraints_path = Path("/tmp/univad_runtime_constraints.txt")
+    constraints_path.write_text(
+        "\n".join(
+            [
+                f"numpy=={UNIVAD_NUMPY_VERSION}",
+                f"opencv-python=={UNIVAD_OPENCV_VERSION}",
+                f"opencv-python-headless=={UNIVAD_OPENCV_VERSION}",
+                f"opencv-contrib-python=={UNIVAD_OPENCV_VERSION}",
+                f"opencv-contrib-python-headless=={UNIVAD_OPENCV_VERSION}",
+                f"transformers=={UNIVAD_TRANSFORMERS_VERSION}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return constraints_path
+
+
 def install_univad_requirements_without_torch(requirements_path: Path) -> Path:
-    blocked_prefixes = ("torch", "torchvision", "torchaudio", "transformers", "numpy", "opencv")
+    blocked_package_names = {
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "transformers",
+        "numpy",
+        "opencv-python",
+        "opencv-python-headless",
+        "opencv-contrib-python",
+        "opencv-contrib-python-headless",
+    }
     filtered_lines: list[str] = []
     for raw_line in requirements_path.read_text(encoding="utf-8").splitlines():
         stripped = raw_line.strip()
@@ -961,12 +990,29 @@ def install_univad_requirements_without_torch(requirements_path: Path) -> Path:
             filtered_lines.append(raw_line)
             continue
         normalized = stripped.lower().replace("_", "-").replace(" ", "")
-        if normalized.startswith(blocked_prefixes):
+        requirement_name = normalized.split("@", maxsplit=1)[0]
+        requirement_name = requirement_name.split("[", maxsplit=1)[0]
+        for separator in ("==", ">=", "<=", "~=", "!=", ">", "<"):
+            requirement_name = requirement_name.split(separator, maxsplit=1)[0]
+        if requirement_name in blocked_package_names:
             continue
         filtered_lines.append(raw_line)
     temp_requirements = Path("/tmp/univad_requirements_notorch.txt")
     temp_requirements.write_text("\n".join(filtered_lines) + "\n", encoding="utf-8")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(temp_requirements)], check=True)
+    constraints_path = write_univad_runtime_constraints()
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-r",
+            str(temp_requirements),
+            "-c",
+            str(constraints_path),
+        ],
+        check=True,
+    )
     return temp_requirements
 
 
@@ -1085,6 +1131,7 @@ def maybe_fix_univad_transformers_stack(settings: dict[str, Any]) -> dict[str, A
         [
             "install",
             "--upgrade",
+            "--force-reinstall",
             "--no-cache-dir",
             f"transformers=={UNIVAD_TRANSFORMERS_VERSION}",
         ]

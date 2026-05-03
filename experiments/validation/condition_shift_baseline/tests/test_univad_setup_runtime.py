@@ -20,7 +20,9 @@ from univad.setup_runtime import (  # noqa: E402
     checkpoint_file_ready,
     collect_univad_missing_mask_image_paths,
     collect_missing_checkpoint_files,
+    install_univad_requirements_without_torch,
     maybe_prepare_univad_grounding_masks,
+    write_univad_runtime_constraints,
 )
 from univad.transformers_runtime import disable_transformers_tensorflow_backend  # noqa: E402
 
@@ -105,6 +107,48 @@ class UniVADSetupRuntimeTests(unittest.TestCase):
         self.assertIn("runtime_dependency_unavailable: runtime deps installed", note)
         self.assertIn("torch_stack_unavailable: torch stack installed", note)
         self.assertNotIn("already compatible", note)
+
+    def test_univad_requirement_install_uses_runtime_constraints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            requirements_path = Path(tmp) / "requirements.txt"
+            requirements_path.write_text(
+                "\n".join(
+                    [
+                        "torch==2.2.0",
+                        "transformers",
+                        "numpy",
+                        "opencv_python",
+                        "torchmetrics",
+                        "supervision",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(setup_runtime_module.subprocess, "run") as run_mock:
+                filtered_path = install_univad_requirements_without_torch(requirements_path)
+
+            filtered_text = filtered_path.read_text(encoding="utf-8")
+            self.assertNotIn("torch==2.2.0", filtered_text)
+            self.assertNotIn("transformers", filtered_text)
+            self.assertNotIn("numpy", filtered_text)
+            self.assertNotIn("opencv_python", filtered_text)
+            self.assertIn("torchmetrics", filtered_text)
+            self.assertIn("supervision", filtered_text)
+
+            command = run_mock.call_args.args[0]
+            self.assertIn("-c", command)
+            constraints_path = Path(command[command.index("-c") + 1])
+            constraints_text = constraints_path.read_text(encoding="utf-8")
+            self.assertIn("transformers==4.45.2", constraints_text)
+            self.assertIn("numpy==1.26.4", constraints_text)
+
+    def test_runtime_constraints_pin_transformers_below_v5(self) -> None:
+        constraints_text = write_univad_runtime_constraints().read_text(encoding="utf-8")
+
+        self.assertIn("transformers==4.45.2", constraints_text)
+        self.assertNotIn("transformers==5", constraints_text)
 
     def test_grounding_mask_generation_skips_complete_categories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
