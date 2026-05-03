@@ -517,6 +517,59 @@ def build_mask_status_rows(spec: dict[str, Any], categories: list[str]) -> list[
     return rows
 
 
+def _mask_path_parts(mask_path: Path, *, mask_root: Path, category: str) -> tuple[str, str, str]:
+    try:
+        rel_path = mask_path.relative_to(mask_root / category)
+    except ValueError:
+        return "-", "-", str(mask_path)
+    parts = rel_path.parts
+    split = parts[0] if len(parts) > 0 else "-"
+    group = parts[1] if len(parts) > 1 else "-"
+    image_id = parts[2] if len(parts) > 2 else "-"
+    return split, group, image_id
+
+
+def build_missing_mask_preview_rows(
+    spec: dict[str, Any],
+    categories: list[str],
+    *,
+    max_rows_per_category: int = 20,
+) -> list[dict[str, Any]]:
+    mask_root = spec.get("mask_root")
+    if mask_root is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    for category in categories:
+        missing_paths: list[Path] = []
+        for image_path in collect_univad_category_image_paths(spec, category):
+            candidate = expected_univad_mask_path(
+                Path(image_path),
+                data_root=spec["data_root"],
+                mask_root=mask_root,
+                category=category,
+            )
+            if not candidate.exists():
+                missing_paths.append(candidate)
+        for mask_path in missing_paths[:max_rows_per_category]:
+            split, group, image_id = _mask_path_parts(
+                mask_path,
+                mask_root=mask_root,
+                category=category,
+            )
+            rows.append(
+                {
+                    "baseline": "UniVAD",
+                    "category": category,
+                    "split": split,
+                    "group": group,
+                    "image_id": image_id,
+                    "missing_mask_path": str(mask_path),
+                    "missing_count_for_category": len(missing_paths),
+                }
+            )
+    return rows
+
+
 def ensure_git_repo(repo_dir: Path, repo_url: str, *, recurse_submodules: bool = False) -> None:
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
     clone_flag = "--recurse-submodules " if recurse_submodules else ""
@@ -1337,6 +1390,23 @@ def setup_univad(
         if missing_mask_paths
         else "-"
     )
+    setup_status = "ready"
+    note_parts = [requirement_note]
+    if missing_checkpoint_files:
+        setup_status = "partial"
+        note_parts.append(f"missing checkpoints: {', '.join(missing_checkpoint_files)}")
+    if missing_data_paths:
+        setup_status = "partial"
+        note_parts.append(f"missing data paths: {len(missing_data_paths)}")
+    if missing_mask_paths:
+        setup_status = "partial"
+        note_parts.append(
+            f"missing grounding masks: {len(missing_mask_paths)}; "
+            f"mask_generation_reason={mask_status['reason']}"
+        )
+    if mask_status["error"] != "-":
+        setup_status = "partial"
+        note_parts.append(f"mask_generation_error={mask_status['error']}")
     return {
         "baseline": "UniVAD",
         "external_dir": str(univad_dir),
@@ -1378,8 +1448,8 @@ def setup_univad(
         "mask_backup_file_count": mask_backup_status["copied_mask_files"],
         "missing_data_paths": ", ".join(missing_data_paths) if missing_data_paths else "-",
         "missing_mask_paths": missing_mask_paths_display,
-        "setup_status": "ready" if mask_status["error"] == "-" else "partial",
-        "note": requirement_note,
+        "setup_status": setup_status,
+        "note": " | ".join(note_parts),
     }
 
 
@@ -1472,6 +1542,11 @@ def run_baseline_setup(
         if "UniVAD" in requested_baselines
         else pd.DataFrame(),
         "univad_mask_status_df": pd.DataFrame(build_mask_status_rows(specs["UniVAD"], categories))
+        if "UniVAD" in requested_baselines
+        else pd.DataFrame(),
+        "univad_missing_mask_preview_df": pd.DataFrame(
+            build_missing_mask_preview_rows(specs["UniVAD"], categories)
+        )
         if "UniVAD" in requested_baselines
         else pd.DataFrame(),
     }
