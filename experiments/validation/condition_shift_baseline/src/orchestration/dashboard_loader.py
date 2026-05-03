@@ -29,6 +29,23 @@ from notebook_orchestration import Markdown, display, display_df, display_title,
 from repo_paths import REPO_ROOT
 
 
+CLEAN_AUROC_METRICS = [
+    ("clean_image_auroc", "overall"),
+    ("clean_logical_image_auroc", "logical"),
+    ("clean_structural_image_auroc", "structural"),
+]
+SHIFTED_AUROC_METRICS = [
+    ("shifted_image_auroc", "overall"),
+    ("shifted_image_auroc_vs_logical_anomaly", "logical"),
+    ("shifted_image_auroc_vs_structural_anomaly", "structural"),
+]
+AUROC_DROP_METRICS = [
+    ("image_auroc_drop_from_clean", "overall"),
+    ("image_auroc_drop_from_clean_logical", "logical"),
+    ("image_auroc_drop_from_clean_structural", "structural"),
+]
+
+
 def load_json_if_exists(path: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
@@ -56,6 +73,35 @@ def safe_mean(values: list[float]) -> float:
 
 def safe_max(values: list[float]) -> float:
     return float(max(values)) if values else np.nan
+
+
+def metric_has_values(df: pd.DataFrame, column: str) -> bool:
+    return column in df.columns and df[column].notna().any()
+
+
+def metric_split_long_df(
+    df: pd.DataFrame,
+    *,
+    id_columns: list[str],
+    metric_specs: list[tuple[str, str]],
+    value_name: str,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    if df.empty:
+        return pd.DataFrame(columns=[*id_columns, "anomaly_scope", "metric_column", value_name])
+    for metric_column, anomaly_scope in metric_specs:
+        if metric_column not in df.columns:
+            continue
+        for _, row in df.iterrows():
+            rows.append(
+                {
+                    **{column: row.get(column) for column in id_columns},
+                    "anomaly_scope": anomaly_scope,
+                    "metric_column": metric_column,
+                    value_name: row.get(metric_column),
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def normalize_patchcore_clean_eval(payload: dict[str, Any], source_path: Path) -> list[dict[str, Any]]:
@@ -537,11 +583,19 @@ def display_dashboard_tables(frames: dict[str, pd.DataFrame], *, run_history: li
         empty_columns=["baseline", "category", "clean_image_auroc"],
     )
     if not clean_manifest_df.empty and clean_manifest_df["baseline"].nunique() > 1:
-        display_df(
-            "Clean AUROC Comparison",
-            clean_manifest_df.pivot(index="category", columns="baseline", values="clean_image_auroc").reset_index(),
-            empty_columns=["category"],
-        )
+        for metric_column, anomaly_scope in CLEAN_AUROC_METRICS:
+            display_df(
+                f"Clean AUROC Comparison | {anomaly_scope}",
+                clean_manifest_df.pivot(index="category", columns="baseline", values=metric_column).reset_index()
+                if metric_column in clean_manifest_df.columns
+                else pd.DataFrame(),
+                empty_columns=["category"],
+                body=(
+                    f"Metric: `{metric_column}`."
+                    if metric_has_values(clean_manifest_df, metric_column)
+                    else f"Metric `{metric_column}` unavailable. Re-run 01 with updated runners for log/str split."
+                ),
+            )
 
     display_df(
         "Shift Summary Table",
@@ -553,9 +607,20 @@ def display_dashboard_tables(frames: dict[str, pd.DataFrame], *, run_history: li
         severity_table_df.rename(columns={"shift_family": "corruption_type", "shifted_normal_p25": "p25", "shifted_normal_p75": "p75"}),
         empty_columns=["baseline", "category", "corruption_type", "severity", "shifted_normal_fpr"],
     )
+    auroc_drop_split_df = metric_split_long_df(
+        severity_table_df,
+        id_columns=["baseline", "category", "shift_family", "severity"],
+        metric_specs=AUROC_DROP_METRICS,
+        value_name="auroc_drop_from_clean",
+    )
+    display_df(
+        "Severity Table | AUROC Drop Split",
+        auroc_drop_split_df.rename(columns={"shift_family": "corruption_type"}),
+        empty_columns=["baseline", "category", "corruption_type", "severity", "anomaly_scope", "auroc_drop_from_clean"],
+        body="Rows are separated into overall/logical/structural anomaly scopes.",
+    )
     for title, key, metric_column in [
         ("Worst-Case Ranking | shifted_normal_fpr", "worst_fpr_ranking_df", "shifted_normal_fpr"),
-        ("Worst-Case Ranking | image_auroc_drop_from_clean", "worst_auroc_drop_ranking_df", "image_auroc_drop_from_clean"),
         ("Worst-Case Ranking | mean_score_shift", "worst_mean_score_shift_ranking_df", "mean_score_shift"),
     ]:
         df = frames[key]
@@ -566,6 +631,35 @@ def display_dashboard_tables(frames: dict[str, pd.DataFrame], *, run_history: li
             else df,
             empty_columns=["baseline", "category", "shift_family", "severity", metric_column],
             body=f"Top {top_k} worst shift cells.",
+        )
+    for metric_column, anomaly_scope in AUROC_DROP_METRICS:
+        ranking_df = (
+            frames["shift_df"].sort_values(metric_column, ascending=False).head(top_k).reset_index(drop=True)
+            if metric_has_values(frames["shift_df"], metric_column)
+            else pd.DataFrame()
+        )
+        display_df(
+            f"Worst-Case Ranking | AUROC drop | {anomaly_scope}",
+            ranking_df[
+                [
+                    "baseline",
+                    "category",
+                    "shift_family",
+                    "severity",
+                    metric_column,
+                    "shifted_image_auroc",
+                    "shifted_image_auroc_vs_logical_anomaly",
+                    "shifted_image_auroc_vs_structural_anomaly",
+                ]
+            ]
+            if not ranking_df.empty
+            else ranking_df,
+            empty_columns=["baseline", "category", "shift_family", "severity", metric_column],
+            body=(
+                f"Top {top_k} worst shift cells for `{metric_column}`."
+                if not ranking_df.empty
+                else f"Metric `{metric_column}` unavailable. Re-run 01 with updated runners for log/str split."
+            ),
         )
 
     display_df("Dedicated Clean Eval Results", frames["clean_eval_df"], empty_columns=["baseline", "category", "clean_metric_primary"])
@@ -818,25 +912,7 @@ def render_visual_dashboard(frames: dict[str, pd.DataFrame], *, dashboard_baseli
     )
 
     if not clean_manifest_df.empty:
-        clean_plot_df = clean_manifest_df.copy()
-        baselines_in_clean = ordered_baselines(clean_plot_df["baseline"], dashboard_baselines)
-        categories_in_clean = list(dict.fromkeys(clean_plot_df["category"]))
-        x = np.arange(len(categories_in_clean))
-        width = 0.8 / max(len(baselines_in_clean), 1)
-        fig, ax = plt.subplots(figsize=(8, 4.5), constrained_layout=True)
-        for idx, baseline in enumerate(baselines_in_clean):
-            baseline_df = clean_plot_df[clean_plot_df["baseline"] == baseline].set_index("category")
-            values = [
-                baseline_df.loc[category, "clean_image_auroc"] if category in baseline_df.index else np.nan
-                for category in categories_in_clean
-            ]
-            ax.bar(x + idx * width - ((len(baselines_in_clean) - 1) * width / 2), values, width=width, label=baseline)
-        ax.set_title("Clean Image AUROC by Baseline")
-        ax.set_xticks(x)
-        ax.set_xticklabels(categories_in_clean, rotation=0)
-        ax.set_ylabel("AUROC (%)")
-        ax.legend(title="baseline")
-        plt.show()
+        render_clean_auroc_split_plots(clean_manifest_df, dashboard_baselines)
 
     if not shift_df.empty:
         render_shift_plots(shift_df, dashboard_baselines)
@@ -846,28 +922,82 @@ def render_visual_dashboard(frames: dict[str, pd.DataFrame], *, dashboard_baseli
         render_explainability_gallery(gallery_df, clean_reference_df)
 
 
+def render_clean_auroc_split_plots(clean_manifest_df: pd.DataFrame, dashboard_baselines: list[str]) -> None:
+    clean_plot_df = metric_split_long_df(
+        clean_manifest_df,
+        id_columns=["baseline", "category"],
+        metric_specs=CLEAN_AUROC_METRICS,
+        value_name="clean_image_auroc",
+    )
+    baselines_in_clean = ordered_baselines(clean_manifest_df["baseline"], dashboard_baselines)
+    categories_in_clean = list(dict.fromkeys(clean_manifest_df["category"]))
+    x = np.arange(len(categories_in_clean))
+    width = 0.8 / max(len(baselines_in_clean), 1)
+    fig, axes = plt.subplots(1, len(CLEAN_AUROC_METRICS), figsize=(6 * len(CLEAN_AUROC_METRICS), 4.5), constrained_layout=True)
+    if len(CLEAN_AUROC_METRICS) == 1:
+        axes = [axes]
+    for ax, (_, anomaly_scope) in zip(axes, CLEAN_AUROC_METRICS):
+        scope_df = clean_plot_df[clean_plot_df["anomaly_scope"] == anomaly_scope]
+        if scope_df["clean_image_auroc"].notna().any():
+            for idx, baseline in enumerate(baselines_in_clean):
+                baseline_df = scope_df[scope_df["baseline"] == baseline].set_index("category")
+                values = [
+                    baseline_df.loc[category, "clean_image_auroc"] if category in baseline_df.index else np.nan
+                    for category in categories_in_clean
+                ]
+                ax.bar(x + idx * width - ((len(baselines_in_clean) - 1) * width / 2), values, width=width, label=baseline)
+            ax.set_xticks(x)
+            ax.set_xticklabels(categories_in_clean, rotation=0)
+            ax.set_ylabel("AUROC (%)")
+            ax.legend(title="baseline")
+        else:
+            ax.text(0.5, 0.5, "split metric unavailable\nre-run 01", ha="center", va="center")
+            ax.set_xticks([])
+            ax.set_yticks([])
+        ax.set_title(f"Clean Image AUROC | {anomaly_scope}")
+    plt.show()
+
+
 def render_shift_plots(shift_df: pd.DataFrame, dashboard_baselines: list[str]) -> None:
+    shifted_auroc_long_df = metric_split_long_df(
+        shift_df,
+        id_columns=["baseline", "category", "shift_family", "severity", "severity_rank"],
+        metric_specs=SHIFTED_AUROC_METRICS,
+        value_name="shifted_image_auroc",
+    )
     shifted_auroc_bar_df = (
-        shift_df.groupby(["baseline", "category", "shift_family", "severity", "severity_rank"])
+        shifted_auroc_long_df.groupby(["baseline", "category", "anomaly_scope", "shift_family", "severity", "severity_rank"])
         .agg(shifted_image_auroc=("shifted_image_auroc", "mean"))
         .reset_index()
-        .sort_values(["baseline", "category", "shift_family", "severity_rank"])
+        .sort_values(["baseline", "category", "anomaly_scope", "shift_family", "severity_rank"])
     )
     for (baseline, category), plot_df in shifted_auroc_bar_df.groupby(["baseline", "category"]):
-        families = list(dict.fromkeys(plot_df["shift_family"]))
-        severities = [severity for severity in ["low", "medium", "high"] if severity in set(plot_df["severity"])]
-        x = np.arange(len(families))
-        width = 0.8 / max(len(severities), 1)
-        fig, ax = plt.subplots(figsize=(max(8, len(families) * 1.4), 4.8), constrained_layout=True)
-        for idx, severity in enumerate(severities):
-            severity_df = plot_df[plot_df["severity"] == severity].set_index("shift_family")
-            values = [severity_df.loc[family, "shifted_image_auroc"] if family in severity_df.index else np.nan for family in families]
-            ax.bar(x + idx * width - ((len(severities) - 1) * width / 2), values, width=width, label=severity)
-        ax.set_title(f"{baseline} | {category} | Shifted Image AUROC by Corruption and Severity")
-        ax.set_xticks(x)
-        ax.set_xticklabels(families, rotation=25, ha="right")
-        ax.set_ylabel("shifted image AUROC (%)")
-        ax.legend(title="severity")
+        fig, axes = plt.subplots(1, len(SHIFTED_AUROC_METRICS), figsize=(6 * len(SHIFTED_AUROC_METRICS), 4.8), constrained_layout=True)
+        if len(SHIFTED_AUROC_METRICS) == 1:
+            axes = [axes]
+        for ax, (_, anomaly_scope) in zip(axes, SHIFTED_AUROC_METRICS):
+            scope_df = plot_df[plot_df["anomaly_scope"] == anomaly_scope]
+            families = list(dict.fromkeys(scope_df["shift_family"]))
+            severities = [severity for severity in ["low", "medium", "high"] if severity in set(scope_df["severity"])]
+            x = np.arange(len(families))
+            width = 0.8 / max(len(severities), 1)
+            if scope_df["shifted_image_auroc"].notna().any():
+                for idx, severity in enumerate(severities):
+                    severity_df = scope_df[scope_df["severity"] == severity].set_index("shift_family")
+                    values = [
+                        severity_df.loc[family, "shifted_image_auroc"] if family in severity_df.index else np.nan
+                        for family in families
+                    ]
+                    ax.bar(x + idx * width - ((len(severities) - 1) * width / 2), values, width=width, label=severity)
+                ax.set_xticks(x)
+                ax.set_xticklabels(families, rotation=25, ha="right")
+                ax.set_ylabel("shifted image AUROC (%)")
+                ax.legend(title="severity")
+            else:
+                ax.text(0.5, 0.5, "split metric unavailable\nre-run 01", ha="center", va="center")
+                ax.set_xticks([])
+                ax.set_yticks([])
+            ax.set_title(f"{baseline} | {category} | shifted AUROC | {anomaly_scope}")
         plt.show()
 
     severity_line_df = (
@@ -875,6 +1005,8 @@ def render_shift_plots(shift_df: pd.DataFrame, dashboard_baselines: list[str]) -
         .agg(
             shifted_normal_fpr=("shifted_normal_fpr", "mean"),
             image_auroc_drop_from_clean=("image_auroc_drop_from_clean", "mean"),
+            image_auroc_drop_from_clean_logical=("image_auroc_drop_from_clean_logical", "mean"),
+            image_auroc_drop_from_clean_structural=("image_auroc_drop_from_clean_structural", "mean"),
             mean_score_shift=("mean_score_shift", "mean"),
             median_score_shift=("median_score_shift", "mean"),
         )
@@ -882,17 +1014,25 @@ def render_shift_plots(shift_df: pd.DataFrame, dashboard_baselines: list[str]) -
         .sort_values(["baseline", "category", "shift_family", "severity_rank"])
     )
     for (baseline, category, shift_family), family_df in severity_line_df.groupby(["baseline", "category", "shift_family"]):
-        fig, axes = plt.subplots(1, 4, figsize=(20, 4.0), constrained_layout=True)
+        fig, axes = plt.subplots(2, 3, figsize=(18, 7.5), constrained_layout=True)
+        axes_flat = axes.ravel()
         for ax, (column, title, ylabel) in zip(
-            axes,
+            axes_flat,
             [
                 ("shifted_normal_fpr", "shifted_normal_fpr", "FPR"),
-                ("image_auroc_drop_from_clean", "image_auroc_drop_from_clean", "AUROC drop"),
+                ("image_auroc_drop_from_clean", "AUROC drop | overall", "AUROC drop"),
+                ("image_auroc_drop_from_clean_logical", "AUROC drop | logical", "AUROC drop"),
+                ("image_auroc_drop_from_clean_structural", "AUROC drop | structural", "AUROC drop"),
                 ("mean_score_shift", "mean_score_shift", "mean score shift"),
                 ("median_score_shift", "median_score_shift", "median score shift"),
             ],
         ):
-            ax.plot(family_df["severity"], family_df[column], marker="o", linewidth=2)
+            if family_df[column].notna().any():
+                ax.plot(family_df["severity"], family_df[column], marker="o", linewidth=2)
+            else:
+                ax.text(0.5, 0.5, "metric unavailable\nre-run 01", ha="center", va="center")
+                ax.set_xticks([])
+                ax.set_yticks([])
             ax.set_title(f"{shift_family} | {title}")
             ax.set_xlabel("severity")
             ax.set_ylabel(ylabel)
