@@ -444,6 +444,7 @@ def maybe_restore_univad_checkpoints_from_drive(
 
     source_root = resolve_univad_checkpoint_drive_root(settings)
     if not source_root:
+        print("model checkpoint restore: drive_root=- action=skip reason=source_unset")
         return build_checkpoint_restore_status(
             attempted=True,
             status="source_unset",
@@ -458,6 +459,7 @@ def maybe_restore_univad_checkpoints_from_drive(
         note="model checkpoint cache",
     )
     if str(source_root).startswith("/content/drive") and not Path("/content/drive/MyDrive").exists():
+        print(f"model checkpoint restore: drive_root={source_root} action=skip reason=drive_unavailable")
         return build_checkpoint_restore_status(
             attempted=True,
             status="drive_unavailable",
@@ -465,6 +467,7 @@ def maybe_restore_univad_checkpoints_from_drive(
             note="Mount Google Drive in Colab before rerunning setup to restore model checkpoints",
         )
     if not source_root.exists():
+        print(f"model checkpoint restore: drive_root={source_root} action=download_if_enabled reason=source_missing")
         return build_checkpoint_restore_status(
             attempted=True,
             status="source_missing",
@@ -477,13 +480,34 @@ def maybe_restore_univad_checkpoints_from_drive(
     copied_checkpoint_files: list[str] = []
     missing_cache_files: list[str] = []
     for filename in spec.get("required_checkpoint_files", []):
-        if checkpoint_file_ready(spec, filename):
-            continue
+        local_path = checkpoint_root / filename
         source_path = source_root / filename
+        local_status = describe_checkpoint_path(spec, filename, local_path)
+        drive_status = describe_checkpoint_path(spec, filename, source_path)
+        if checkpoint_file_ready(spec, filename):
+            print_checkpoint_state(
+                filename,
+                session_status=local_status,
+                drive_status=drive_status,
+                action="keep_session",
+            )
+            continue
         if not checkpoint_path_ready(spec, filename, source_path):
+            print_checkpoint_state(
+                filename,
+                session_status=local_status,
+                drive_status=drive_status,
+                action="download_if_enabled",
+            )
             missing_cache_files.append(filename)
             continue
         destination_path = checkpoint_root / filename
+        print_checkpoint_state(
+            filename,
+            session_status=local_status,
+            drive_status=drive_status,
+            action="restore_from_drive",
+        )
         shutil.copy2(source_path, destination_path)
         if checkpoint_file_ready(spec, filename):
             copied_checkpoint_files.append(filename)
@@ -529,6 +553,7 @@ def maybe_backup_univad_checkpoints_to_drive(
 
     destination_root = resolve_univad_checkpoint_drive_root(settings)
     if not destination_root:
+        print("model checkpoint backup: drive_root=- action=skip reason=destination_unset")
         return build_checkpoint_backup_status(
             attempted=True,
             status="destination_unset",
@@ -543,6 +568,7 @@ def maybe_backup_univad_checkpoints_to_drive(
         note="model checkpoint cache",
     )
     if str(destination_root).startswith("/content/drive") and not Path("/content/drive/MyDrive").exists():
+        print(f"model checkpoint backup: drive_root={destination_root} action=skip reason=drive_unavailable")
         return build_checkpoint_backup_status(
             attempted=True,
             status="drive_unavailable",
@@ -552,6 +578,7 @@ def maybe_backup_univad_checkpoints_to_drive(
 
     checkpoint_root = spec["checkpoint_root"]
     if not checkpoint_root.exists():
+        print(f"model checkpoint backup: session_root={checkpoint_root} action=skip reason=source_missing")
         return build_checkpoint_backup_status(
             attempted=True,
             status="source_missing",
@@ -566,12 +593,32 @@ def maybe_backup_univad_checkpoints_to_drive(
     for filename in spec.get("required_checkpoint_files", []):
         source_path = checkpoint_root / filename
         destination_path = destination_root / filename
+        session_status = describe_checkpoint_path(spec, filename, source_path)
+        drive_status = describe_checkpoint_path(spec, filename, destination_path)
         if not checkpoint_path_ready(spec, filename, source_path):
+            print_checkpoint_state(
+                filename,
+                session_status=session_status,
+                drive_status=drive_status,
+                action="skip_backup_session_missing",
+            )
             missing_local_files.append(filename)
             continue
         if checkpoint_path_ready(spec, filename, destination_path):
+            print_checkpoint_state(
+                filename,
+                session_status=session_status,
+                drive_status=drive_status,
+                action="keep_drive_cache",
+            )
             cached_checkpoint_files.append(filename)
             continue
+        print_checkpoint_state(
+            filename,
+            session_status=session_status,
+            drive_status=drive_status,
+            action="backup_to_drive",
+        )
         shutil.copy2(source_path, destination_path)
         if checkpoint_path_ready(spec, filename, destination_path):
             copied_checkpoint_files.append(filename)
@@ -877,6 +924,30 @@ def checkpoint_path_ready(spec: dict[str, Any], filename: str, checkpoint_path: 
     if expected_bytes is not None and checkpoint_path.stat().st_size != int(expected_bytes):
         return False
     return True
+
+
+def describe_checkpoint_path(spec: dict[str, Any], filename: str, checkpoint_path: Path) -> str:
+    if checkpoint_path_ready(spec, filename, checkpoint_path):
+        return "ready"
+    if not checkpoint_path.exists():
+        return "missing"
+    expected_bytes = spec.get("checkpoint_expected_bytes", {}).get(filename)
+    if expected_bytes is None:
+        return "not_ready"
+    return f"size_mismatch({checkpoint_path.stat().st_size}/{int(expected_bytes)})"
+
+
+def print_checkpoint_state(
+    filename: str,
+    *,
+    session_status: str,
+    drive_status: str,
+    action: str,
+) -> None:
+    print(
+        f"model checkpoint state: file={filename} "
+        f"session={session_status} drive={drive_status} action={action}"
+    )
 
 
 def checkpoint_file_ready(spec: dict[str, Any], filename: str) -> bool:
@@ -1408,11 +1479,20 @@ def maybe_download_univad_checkpoints(spec: dict[str, Any], settings: dict[str, 
     checkpoint_root = spec["checkpoint_root"]
     ensure_directory(checkpoint_root)
     downloaded: list[str] = []
-    if not settings["download_missing_univad_checkpoints"]:
+    missing_checkpoint_files = collect_missing_checkpoint_files(spec)
+    if not missing_checkpoint_files:
+        print("model checkpoint download: action=skip reason=session_ready")
         return downloaded
-    for filename in collect_missing_checkpoint_files(spec):
+    if not settings["download_missing_univad_checkpoints"]:
+        print(
+            "model checkpoint download: "
+            f"action=skip reason=disabled missing={', '.join(missing_checkpoint_files)}"
+        )
+        return downloaded
+    for filename in missing_checkpoint_files:
         urls = checkpoint_download_urls(spec, filename)
         if not urls:
+            print(f"model checkpoint download: file={filename} action=skip reason=no_url")
             continue
         destination = checkpoint_root / filename
         expected_bytes = spec.get("checkpoint_expected_bytes", {}).get(filename)
@@ -1422,7 +1502,7 @@ def maybe_download_univad_checkpoints(spec: dict[str, Any], settings: dict[str, 
                 f"checkpoint exists but is incomplete or unexpected size: "
                 f"{filename} actual={destination.stat().st_size} expected={expected_bytes}"
             )
-        print(f"download checkpoint: {filename}")
+        print(f"model checkpoint download: file={filename} action=download source={urls[0]}")
         download_file(
             urls,
             destination,
