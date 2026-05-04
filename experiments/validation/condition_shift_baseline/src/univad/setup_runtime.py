@@ -66,6 +66,10 @@ def default_univad_setup_flags() -> dict[str, Any]:
         "auto_fix_univad_torch_stack": True,
         "auto_fix_univad_transformers_stack": True,
         "auto_fix_univad_runtime_deps": True,
+        "restore_model_checkpoints_from_drive": True,
+        "backup_model_checkpoints_to_drive": True,
+        "auto_mount_google_drive_for_model_checkpoints": True,
+        "model_checkpoint_drive_backup_root": "/content/drive/MyDrive/ReGraM/model_checkpoints",
         "restore_univad_grounding_masks_from_drive": True,
         "backup_univad_grounding_masks_to_drive": True,
         "auto_mount_google_drive_for_univad_masks": True,
@@ -187,6 +191,42 @@ def build_mask_restore_status(
     }
 
 
+def build_checkpoint_restore_status(
+    *,
+    attempted: bool,
+    status: str,
+    source_root: Path | None,
+    copied_checkpoint_files: list[str] | None = None,
+    note: str = "-",
+) -> dict[str, Any]:
+    return {
+        "attempted": attempted,
+        "status": status,
+        "source_root": str(source_root) if source_root is not None else "-",
+        "copied_checkpoint_files": copied_checkpoint_files or [],
+        "note": note,
+    }
+
+
+def build_checkpoint_backup_status(
+    *,
+    attempted: bool,
+    status: str,
+    destination_root: Path | None,
+    copied_checkpoint_files: list[str] | None = None,
+    cached_checkpoint_files: list[str] | None = None,
+    note: str = "-",
+) -> dict[str, Any]:
+    return {
+        "attempted": attempted,
+        "status": status,
+        "destination_root": str(destination_root) if destination_root is not None else "-",
+        "copied_checkpoint_files": copied_checkpoint_files or [],
+        "cached_checkpoint_files": cached_checkpoint_files or [],
+        "note": note,
+    }
+
+
 def resolve_univad_mask_drive_root(settings: dict[str, Any]) -> Path:
     return Path(
         os.environ.get(
@@ -196,18 +236,58 @@ def resolve_univad_mask_drive_root(settings: dict[str, Any]) -> Path:
     )
 
 
-def maybe_mount_google_drive_for_backup(destination_root: Path, settings: dict[str, Any]) -> None:
+def resolve_univad_checkpoint_drive_root(settings: dict[str, Any]) -> Path:
+    return Path(
+        os.environ.get(
+            "REGRAM_MODEL_CHECKPOINT_DRIVE_ROOT",
+            os.environ.get(
+                "UNIVAD_CHECKPOINT_DRIVE_BACKUP_ROOT",
+                str(
+                    settings.get(
+                        "model_checkpoint_drive_backup_root",
+                        settings.get("univad_checkpoint_drive_backup_root", ""),
+                    )
+                ),
+            ),
+        )
+    )
+
+
+def checkpoint_drive_setting_enabled(
+    settings: dict[str, Any],
+    generic_key: str,
+    legacy_key: str,
+) -> bool:
+    if generic_key in settings:
+        return bool(settings[generic_key])
+    return bool(settings.get(legacy_key, False))
+
+
+def maybe_mount_google_drive_for_backup(
+    destination_root: Path,
+    settings: dict[str, Any],
+    *,
+    enabled_flag: str = "auto_mount_google_drive_for_univad_masks",
+    legacy_enabled_flag: str | None = None,
+    note: str = "UniVAD mask backup",
+) -> None:
     if not str(destination_root).startswith("/content/drive"):
         return
     if Path("/content/drive/MyDrive").exists():
         return
-    if not settings.get("auto_mount_google_drive_for_univad_masks", False):
+    if enabled_flag in settings:
+        mount_enabled = bool(settings[enabled_flag])
+    elif legacy_enabled_flag is not None:
+        mount_enabled = bool(settings.get(legacy_enabled_flag, False))
+    else:
+        mount_enabled = False
+    if not mount_enabled:
         return
     try:
         from google.colab import drive  # type: ignore[import-not-found]  # noqa: WPS433
     except Exception:  # noqa: BLE001
         return
-    print("mount Google Drive for UniVAD mask backup")
+    print(f"mount Google Drive for {note}")
     drive.mount("/content/drive")
 
 
@@ -342,6 +422,182 @@ def maybe_backup_univad_grounding_masks(
         destination_root=destination_root,
         copied_categories=copied_categories,
         copied_mask_files=copied_mask_files,
+        note=note,
+    )
+
+
+def maybe_restore_univad_checkpoints_from_drive(
+    spec: dict[str, Any],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    if not checkpoint_drive_setting_enabled(
+        settings,
+        "restore_model_checkpoints_from_drive",
+        "restore_univad_checkpoints_from_drive",
+    ):
+        return build_checkpoint_restore_status(
+            attempted=False,
+            status="disabled",
+            source_root=None,
+            note="Model checkpoint Drive restore disabled",
+        )
+
+    source_root = resolve_univad_checkpoint_drive_root(settings)
+    if not source_root:
+        return build_checkpoint_restore_status(
+            attempted=True,
+            status="source_unset",
+            source_root=None,
+            note="Model checkpoint Drive restore root is empty",
+        )
+    maybe_mount_google_drive_for_backup(
+        source_root,
+        settings,
+        enabled_flag="auto_mount_google_drive_for_model_checkpoints",
+        legacy_enabled_flag="auto_mount_google_drive_for_univad_checkpoints",
+        note="model checkpoint cache",
+    )
+    if str(source_root).startswith("/content/drive") and not Path("/content/drive/MyDrive").exists():
+        return build_checkpoint_restore_status(
+            attempted=True,
+            status="drive_unavailable",
+            source_root=source_root,
+            note="Mount Google Drive in Colab before rerunning setup to restore model checkpoints",
+        )
+    if not source_root.exists():
+        return build_checkpoint_restore_status(
+            attempted=True,
+            status="source_missing",
+            source_root=source_root,
+            note=f"Model checkpoint Drive cache does not exist: {source_root}",
+        )
+
+    checkpoint_root = spec["checkpoint_root"]
+    ensure_directory(checkpoint_root)
+    copied_checkpoint_files: list[str] = []
+    missing_cache_files: list[str] = []
+    for filename in spec.get("required_checkpoint_files", []):
+        if checkpoint_file_ready(spec, filename):
+            continue
+        source_path = source_root / filename
+        if not checkpoint_path_ready(spec, filename, source_path):
+            missing_cache_files.append(filename)
+            continue
+        destination_path = checkpoint_root / filename
+        shutil.copy2(source_path, destination_path)
+        if checkpoint_file_ready(spec, filename):
+            copied_checkpoint_files.append(filename)
+
+    if copied_checkpoint_files:
+        return build_checkpoint_restore_status(
+            attempted=True,
+            status="ok",
+            source_root=source_root,
+            copied_checkpoint_files=copied_checkpoint_files,
+            note=f"Model checkpoints restored from {source_root}",
+        )
+    if not collect_missing_checkpoint_files(spec):
+        return build_checkpoint_restore_status(
+            attempted=True,
+            status="already_present",
+            source_root=source_root,
+            note="Model checkpoints already present locally",
+        )
+    return build_checkpoint_restore_status(
+        attempted=True,
+        status="no_checkpoint_files",
+        source_root=source_root,
+        note="No ready model checkpoint files found in Drive cache: " + ", ".join(missing_cache_files),
+    )
+
+
+def maybe_backup_univad_checkpoints_to_drive(
+    spec: dict[str, Any],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    if not checkpoint_drive_setting_enabled(
+        settings,
+        "backup_model_checkpoints_to_drive",
+        "backup_univad_checkpoints_to_drive",
+    ):
+        return build_checkpoint_backup_status(
+            attempted=False,
+            status="disabled",
+            destination_root=None,
+            note="Model checkpoint Drive backup disabled",
+        )
+
+    destination_root = resolve_univad_checkpoint_drive_root(settings)
+    if not destination_root:
+        return build_checkpoint_backup_status(
+            attempted=True,
+            status="destination_unset",
+            destination_root=None,
+            note="Model checkpoint Drive backup root is empty",
+        )
+    maybe_mount_google_drive_for_backup(
+        destination_root,
+        settings,
+        enabled_flag="auto_mount_google_drive_for_model_checkpoints",
+        legacy_enabled_flag="auto_mount_google_drive_for_univad_checkpoints",
+        note="model checkpoint cache",
+    )
+    if str(destination_root).startswith("/content/drive") and not Path("/content/drive/MyDrive").exists():
+        return build_checkpoint_backup_status(
+            attempted=True,
+            status="drive_unavailable",
+            destination_root=destination_root,
+            note="Mount Google Drive in Colab before rerunning setup to persist model checkpoints",
+        )
+
+    checkpoint_root = spec["checkpoint_root"]
+    if not checkpoint_root.exists():
+        return build_checkpoint_backup_status(
+            attempted=True,
+            status="source_missing",
+            destination_root=destination_root,
+            note=f"UniVAD checkpoint root does not exist: {checkpoint_root}",
+        )
+
+    destination_root.mkdir(parents=True, exist_ok=True)
+    copied_checkpoint_files: list[str] = []
+    cached_checkpoint_files: list[str] = []
+    missing_local_files: list[str] = []
+    for filename in spec.get("required_checkpoint_files", []):
+        source_path = checkpoint_root / filename
+        destination_path = destination_root / filename
+        if not checkpoint_path_ready(spec, filename, source_path):
+            missing_local_files.append(filename)
+            continue
+        if checkpoint_path_ready(spec, filename, destination_path):
+            cached_checkpoint_files.append(filename)
+            continue
+        shutil.copy2(source_path, destination_path)
+        if checkpoint_path_ready(spec, filename, destination_path):
+            copied_checkpoint_files.append(filename)
+            cached_checkpoint_files.append(filename)
+
+    if copied_checkpoint_files:
+        status = "ok"
+        note = f"Model checkpoints backed up to {destination_root}"
+    elif cached_checkpoint_files and not missing_local_files:
+        status = "already_present"
+        note = f"Model checkpoints already cached under {destination_root}"
+    elif cached_checkpoint_files:
+        status = "partial"
+        note = (
+            f"Some model checkpoints are cached under {destination_root}; "
+            f"missing local ready files: {', '.join(missing_local_files)}"
+        )
+    else:
+        status = "no_ready_checkpoints"
+        note = f"No ready model checkpoint files found under {checkpoint_root}"
+    return build_checkpoint_backup_status(
+        attempted=True,
+        status=status,
+        destination_root=destination_root,
+        copied_checkpoint_files=copied_checkpoint_files,
+        cached_checkpoint_files=cached_checkpoint_files,
         note=note,
     )
 
@@ -614,17 +870,20 @@ def ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def checkpoint_file_ready(spec: dict[str, Any], filename: str) -> bool:
-    checkpoint_root = spec.get("checkpoint_root")
-    if checkpoint_root is None:
-        return False
-    checkpoint_path = checkpoint_root / filename
+def checkpoint_path_ready(spec: dict[str, Any], filename: str, checkpoint_path: Path) -> bool:
     if not checkpoint_path.exists():
         return False
     expected_bytes = spec.get("checkpoint_expected_bytes", {}).get(filename)
     if expected_bytes is not None and checkpoint_path.stat().st_size != int(expected_bytes):
         return False
     return True
+
+
+def checkpoint_file_ready(spec: dict[str, Any], filename: str) -> bool:
+    checkpoint_root = spec.get("checkpoint_root")
+    if checkpoint_root is None:
+        return False
+    return checkpoint_path_ready(spec, filename, checkpoint_root / filename)
 
 
 def checkpoint_download_urls(spec: dict[str, Any], filename: str) -> list[str]:
@@ -1297,7 +1556,9 @@ def build_univad_setup_blocked_row(
     checkpoint_root: Path,
     missing_local_paths: list[str],
     caption_dataset_prepared: bool,
+    checkpoint_restore_status: dict[str, Any],
     downloaded_checkpoint_files: list[str],
+    checkpoint_backup_status: dict[str, Any],
     mask_restore_status: dict[str, Any],
     mask_backup_status: dict[str, Any],
     setup_status: str,
@@ -1323,8 +1584,27 @@ def build_univad_setup_blocked_row(
         "mask_generation_categories": "-",
         "patched_component_segmentation": False,
         "download_missing_checkpoints": settings["download_missing_univad_checkpoints"],
+        "checkpoint_restore_status": checkpoint_restore_status["status"],
+        "checkpoint_restore_path": checkpoint_restore_status["source_root"],
+        "checkpoint_restore_files": (
+            ", ".join(checkpoint_restore_status["copied_checkpoint_files"])
+            if checkpoint_restore_status["copied_checkpoint_files"]
+            else "-"
+        ),
         "downloaded_checkpoint_files": ", ".join(downloaded_checkpoint_files) if downloaded_checkpoint_files else "-",
         "missing_checkpoint_files": ", ".join(collect_missing_checkpoint_files(spec)) or "-",
+        "checkpoint_backup_status": checkpoint_backup_status["status"],
+        "checkpoint_backup_path": checkpoint_backup_status["destination_root"],
+        "checkpoint_backup_files": (
+            ", ".join(checkpoint_backup_status["copied_checkpoint_files"])
+            if checkpoint_backup_status["copied_checkpoint_files"]
+            else "-"
+        ),
+        "checkpoint_cached_files": (
+            ", ".join(checkpoint_backup_status["cached_checkpoint_files"])
+            if checkpoint_backup_status["cached_checkpoint_files"]
+            else "-"
+        ),
         "mask_restore_status": mask_restore_status["status"],
         "mask_restore_path": mask_restore_status["source_root"],
         "mask_restore_categories": (
@@ -1357,7 +1637,9 @@ def _blocked_from_status(
     checkpoint_root: Path,
     missing_local_paths: list[str],
     caption_dataset_prepared: bool,
+    checkpoint_restore_status: dict[str, Any],
     downloaded_checkpoint_files: list[str],
+    checkpoint_backup_status: dict[str, Any],
     mask_restore_status: dict[str, Any],
     mask_backup_status: dict[str, Any],
     unavailable_reason: str,
@@ -1371,7 +1653,9 @@ def _blocked_from_status(
             checkpoint_root=checkpoint_root,
             missing_local_paths=missing_local_paths,
             caption_dataset_prepared=caption_dataset_prepared,
+            checkpoint_restore_status=checkpoint_restore_status,
             downloaded_checkpoint_files=downloaded_checkpoint_files,
+            checkpoint_backup_status=checkpoint_backup_status,
             mask_restore_status=mask_restore_status,
             mask_backup_status=mask_backup_status,
             setup_status="restart_required",
@@ -1388,7 +1672,9 @@ def _blocked_from_status(
             checkpoint_root=checkpoint_root,
             missing_local_paths=missing_local_paths,
             caption_dataset_prepared=caption_dataset_prepared,
+            checkpoint_restore_status=checkpoint_restore_status,
             downloaded_checkpoint_files=downloaded_checkpoint_files,
+            checkpoint_backup_status=checkpoint_backup_status,
             mask_restore_status=mask_restore_status,
             mask_backup_status=mask_backup_status,
             setup_status="blocked",
@@ -1431,7 +1717,9 @@ def setup_univad(
     caption_dataset_prepared = maybe_prepare_univad_caption_dataset(
         spec, raw_loco_root=raw_loco_root, settings=settings
     )
+    checkpoint_restore_status = maybe_restore_univad_checkpoints_from_drive(spec, settings)
     downloaded_checkpoint_files = maybe_download_univad_checkpoints(spec, settings)
+    checkpoint_backup_status = maybe_backup_univad_checkpoints_to_drive(spec, settings)
     mask_restore_status = maybe_restore_univad_grounding_masks_from_drive(
         spec, categories=categories, settings=settings
     )
@@ -1454,7 +1742,9 @@ def setup_univad(
             checkpoint_root=checkpoint_root,
             missing_local_paths=missing_local_paths,
             caption_dataset_prepared=caption_dataset_prepared,
+            checkpoint_restore_status=checkpoint_restore_status,
             downloaded_checkpoint_files=downloaded_checkpoint_files,
+            checkpoint_backup_status=checkpoint_backup_status,
             mask_restore_status=mask_restore_status,
             mask_backup_status=mask_backup_status,
             setup_status="restart_required",
@@ -1472,7 +1762,9 @@ def setup_univad(
             checkpoint_root=checkpoint_root,
             missing_local_paths=missing_local_paths,
             caption_dataset_prepared=caption_dataset_prepared,
+            checkpoint_restore_status=checkpoint_restore_status,
             downloaded_checkpoint_files=downloaded_checkpoint_files,
+            checkpoint_backup_status=checkpoint_backup_status,
             mask_restore_status=mask_restore_status,
             mask_backup_status=mask_backup_status,
             unavailable_reason=unavailable_reason,
@@ -1538,8 +1830,27 @@ def setup_univad(
         "patched_reseg_loop_guard": patched_reseg_loop_guard,
         "patched_component_segmentation": mask_status["patched_component_segmentation"],
         "download_missing_checkpoints": settings["download_missing_univad_checkpoints"],
+        "checkpoint_restore_status": checkpoint_restore_status["status"],
+        "checkpoint_restore_path": checkpoint_restore_status["source_root"],
+        "checkpoint_restore_files": (
+            ", ".join(checkpoint_restore_status["copied_checkpoint_files"])
+            if checkpoint_restore_status["copied_checkpoint_files"]
+            else "-"
+        ),
         "downloaded_checkpoint_files": ", ".join(downloaded_checkpoint_files) if downloaded_checkpoint_files else "-",
         "missing_checkpoint_files": ", ".join(missing_checkpoint_files) if missing_checkpoint_files else "-",
+        "checkpoint_backup_status": checkpoint_backup_status["status"],
+        "checkpoint_backup_path": checkpoint_backup_status["destination_root"],
+        "checkpoint_backup_files": (
+            ", ".join(checkpoint_backup_status["copied_checkpoint_files"])
+            if checkpoint_backup_status["copied_checkpoint_files"]
+            else "-"
+        ),
+        "checkpoint_cached_files": (
+            ", ".join(checkpoint_backup_status["cached_checkpoint_files"])
+            if checkpoint_backup_status["cached_checkpoint_files"]
+            else "-"
+        ),
         "mask_restore_status": mask_restore_status["status"],
         "mask_restore_path": mask_restore_status["source_root"],
         "mask_restore_categories": (

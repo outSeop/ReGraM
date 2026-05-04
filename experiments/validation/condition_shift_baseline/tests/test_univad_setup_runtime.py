@@ -20,14 +20,25 @@ from univad.setup_runtime import (  # noqa: E402
     checkpoint_file_ready,
     collect_univad_missing_mask_image_paths,
     collect_missing_checkpoint_files,
+    default_univad_setup_flags,
     install_univad_requirements_without_torch,
+    maybe_backup_univad_checkpoints_to_drive,
     maybe_prepare_univad_grounding_masks,
+    maybe_restore_univad_checkpoints_from_drive,
     write_univad_runtime_constraints,
 )
 from univad.transformers_runtime import disable_transformers_tensorflow_backend  # noqa: E402
 
 
 class UniVADSetupRuntimeTests(unittest.TestCase):
+    def test_default_model_checkpoint_drive_root_is_research_shared(self) -> None:
+        flags = default_univad_setup_flags()
+
+        self.assertEqual(
+            flags["model_checkpoint_drive_backup_root"],
+            "/content/drive/MyDrive/ReGraM/model_checkpoints",
+        )
+
     def test_checkpoint_file_ready_requires_expected_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint_root = Path(tmp)
@@ -69,6 +80,60 @@ class UniVADSetupRuntimeTests(unittest.TestCase):
             ),
             ["https://example.test/b1.pth", "https://example.test/b2.pth"],
         )
+
+    def test_checkpoint_drive_restore_copies_ready_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_root = root / "local_ckpts"
+            drive_root = root / "drive_ckpts"
+            drive_root.mkdir()
+            (drive_root / "toy.pth").write_bytes(b"0123456789")
+            spec = {
+                "checkpoint_root": checkpoint_root,
+                "required_checkpoint_files": ["toy.pth"],
+                "checkpoint_expected_bytes": {"toy.pth": 10},
+            }
+
+            status = maybe_restore_univad_checkpoints_from_drive(
+                spec,
+                {
+                    "restore_model_checkpoints_from_drive": True,
+                    "auto_mount_google_drive_for_model_checkpoints": False,
+                    "model_checkpoint_drive_backup_root": str(drive_root),
+                },
+            )
+
+            self.assertEqual(status["status"], "ok")
+            self.assertEqual(status["copied_checkpoint_files"], ["toy.pth"])
+            self.assertTrue(checkpoint_file_ready(spec, "toy.pth"))
+
+    def test_checkpoint_drive_backup_skips_already_cached_ready_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_root = root / "local_ckpts"
+            drive_root = root / "drive_ckpts"
+            checkpoint_root.mkdir()
+            drive_root.mkdir()
+            (checkpoint_root / "toy.pth").write_bytes(b"0123456789")
+            (drive_root / "toy.pth").write_bytes(b"0123456789")
+            spec = {
+                "checkpoint_root": checkpoint_root,
+                "required_checkpoint_files": ["toy.pth"],
+                "checkpoint_expected_bytes": {"toy.pth": 10},
+            }
+
+            status = maybe_backup_univad_checkpoints_to_drive(
+                spec,
+                {
+                    "backup_model_checkpoints_to_drive": True,
+                    "auto_mount_google_drive_for_model_checkpoints": False,
+                    "model_checkpoint_drive_backup_root": str(drive_root),
+                },
+            )
+
+            self.assertEqual(status["status"], "already_present")
+            self.assertEqual(status["copied_checkpoint_files"], [])
+            self.assertEqual(status["cached_checkpoint_files"], ["toy.pth"])
 
     def test_disable_transformers_tensorflow_backend_patches_loaded_modules(self) -> None:
         fake_import_utils = types.SimpleNamespace(_tf_available=True, _tf_version="5.0")
