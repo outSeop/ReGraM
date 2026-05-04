@@ -22,7 +22,9 @@ import subprocess
 import sys
 import threading
 import time
+from copy import deepcopy
 from datetime import datetime
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,28 @@ except ModuleNotFoundError:  # pragma: no cover - used only in non-notebook loca
 
 SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2}
 SEVERITY_ALIASES = {"middle": "medium", "mid": "medium"}
+MODEL_CONFIG_KEY_ALIASES = {"patchcore": "PatchCore", "univad": "UniVAD"}
+MODEL_CONFIG_EXTRA_KEYS = {"extra_args"}
+DEFAULT_MODEL_CONFIG: dict[str, dict[str, Any]] = {
+    "PatchCore": {
+        "resize": 256,
+        "imagesize": 224,
+        "batch_size": 1,
+        "num_workers": 0,
+        "sampler_percentage": 0.001,
+        "export_heatmaps": True,
+        "heatmap_max_images": 2,
+        "extra_args": [],
+    },
+    "UniVAD": {
+        "image_size": 224,
+        "k_shot": 1,
+        "round": 0,
+        "export_heatmaps": True,
+        "heatmap_max_images": 2,
+        "extra_args": [],
+    },
+}
 
 
 def now_string() -> str:
@@ -79,6 +103,207 @@ def display_environment_summary(repo_root: Path, exp_root: Path, report_root: Pa
             ]
         )
     )
+
+
+def load_experiment_config(config_path: Path | str) -> dict[str, Any]:
+    try:
+        import yaml  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "PyYAML is required to load experiment YAML configs. "
+            "Install it in the runtime with `pip install pyyaml`, or run in Colab where it is usually available."
+        ) from exc
+
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Experiment config not found: {path}")
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(loaded, dict):
+        raise TypeError(f"Experiment config must be a YAML mapping: {path}")
+    return loaded
+
+
+def default_model_config() -> dict[str, dict[str, Any]]:
+    return deepcopy(DEFAULT_MODEL_CONFIG)
+
+
+def canonical_model_name(name: str) -> str:
+    return MODEL_CONFIG_KEY_ALIASES.get(str(name).lower(), str(name))
+
+
+def resolve_model_config(model_config: dict[str, dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    resolved = default_model_config()
+    if model_config is None:
+        return resolved
+    for baseline, config in model_config.items():
+        canonical_baseline = canonical_model_name(str(baseline))
+        if canonical_baseline not in resolved:
+            raise ValueError(f"Unknown model_config baseline={baseline}")
+        if config is None:
+            continue
+        if not isinstance(config, dict):
+            raise TypeError(f"model_config[{baseline!r}] must be a dict")
+        resolved[canonical_baseline].update(config)
+        validate_single_model_config(resolved[canonical_baseline], baseline=canonical_baseline)
+    return resolved
+
+
+def model_config_from_experiment_config(experiment_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    models = experiment_config.get("models", {})
+    if not isinstance(models, dict):
+        raise TypeError("experiment config `models` must be a mapping")
+    return resolve_model_config(models)
+
+
+def model_sweep_from_experiment_config(experiment_config: dict[str, Any]) -> dict[str, Any]:
+    sweep = experiment_config.get("sweep", {})
+    if sweep is None:
+        return {}
+    if not isinstance(sweep, dict):
+        raise TypeError("experiment config `sweep` must be a mapping")
+    return sweep
+
+
+def validate_single_model_config(config: dict[str, Any], *, baseline: str) -> None:
+    for key, value in config.items():
+        if key in MODEL_CONFIG_EXTRA_KEYS:
+            continue
+        if isinstance(value, (list, tuple)):
+            raise ValueError(
+                f"List-valued model config is not allowed at models.{baseline}.{key}. "
+                "Put multiple values under `sweep.models.<baseline>` instead."
+            )
+        if isinstance(value, dict):
+            raise ValueError(
+                f"Nested model config is not allowed at models.{baseline}.{key}. "
+                "Use scalar values, or put grid values under `sweep.models.<baseline>`."
+            )
+
+
+def format_model_config(config: dict[str, Any]) -> str:
+    parts = []
+    for key, value in config.items():
+        if key == "extra_args" and not value:
+            continue
+        parts.append(f"{key}={value}")
+    return ", ".join(parts)
+
+
+def model_variant_display_name(baseline: str, variant_id: str) -> str:
+    return baseline if variant_id == "default" else f"{baseline}:{variant_id}"
+
+
+def build_model_variant_id(values: dict[str, Any]) -> str:
+    if not values:
+        return "default"
+    parts = []
+    for key, value in values.items():
+        value_text = str(value).replace(".", "p").replace("-", "m")
+        safe_value = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in value_text)
+        parts.append(f"{key}_{safe_value}")
+    return "__".join(parts)
+
+
+def expand_model_variants(
+    resolved_model_config: dict[str, dict[str, Any]],
+    model_sweep: dict[str, Any] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    sweep = model_sweep or {}
+    enabled = bool(sweep.get("enabled", False))
+    sweep_models = sweep.get("models", {}) if enabled else {}
+    if sweep_models is None:
+        sweep_models = {}
+    if not isinstance(sweep_models, dict):
+        raise TypeError("sweep.models must be a mapping")
+
+    canonical_sweep_models = {
+        canonical_model_name(str(baseline)): config
+        for baseline, config in sweep_models.items()
+    }
+    for baseline in canonical_sweep_models:
+        if baseline not in resolved_model_config:
+            raise ValueError(f"Unknown sweep model baseline={baseline}")
+    variants_by_baseline: dict[str, list[dict[str, Any]]] = {}
+    for baseline, base_config in resolved_model_config.items():
+        sweep_config = canonical_sweep_models.get(baseline)
+        if not sweep_config:
+            variants_by_baseline[baseline] = [
+                {
+                    "id": "default",
+                    "label": "default",
+                    "output_subdir": None,
+                    "sweep_values": {},
+                    "config": deepcopy(base_config),
+                }
+            ]
+            continue
+        if not isinstance(sweep_config, dict):
+            raise TypeError(f"sweep.models.{baseline} must be a mapping")
+
+        keys = list(sweep_config.keys())
+        value_grid: list[list[Any]] = []
+        for key in keys:
+            values = sweep_config[key]
+            if isinstance(values, (list, tuple)):
+                value_list = list(values)
+            else:
+                value_list = [values]
+            if not value_list:
+                raise ValueError(f"sweep.models.{baseline}.{key} cannot be empty")
+            value_grid.append(value_list)
+
+        variants: list[dict[str, Any]] = []
+        for values in product(*value_grid):
+            sweep_values = dict(zip(keys, values))
+            variant_config = deepcopy(base_config)
+            variant_config.update(sweep_values)
+            validate_single_model_config(variant_config, baseline=baseline)
+            variant_id = build_model_variant_id(sweep_values)
+            variants.append(
+                {
+                    "id": variant_id,
+                    "label": ", ".join(f"{key}={value}" for key, value in sweep_values.items()),
+                    "output_subdir": variant_id,
+                    "sweep_values": sweep_values,
+                    "config": variant_config,
+                }
+            )
+        variants_by_baseline[baseline] = variants
+    return variants_by_baseline
+
+
+def build_patchcore_extra_args(config: dict[str, Any]) -> list[str]:
+    args = [
+        "--resize",
+        str(config["resize"]),
+        "--imagesize",
+        str(config["imagesize"]),
+        "--batch-size",
+        str(config["batch_size"]),
+        "--num-workers",
+        str(config["num_workers"]),
+        "--sampler-percentage",
+        str(config["sampler_percentage"]),
+    ]
+    if config.get("export_heatmaps", False):
+        args.extend(["--export-heatmaps", "--heatmap-max-images", str(config["heatmap_max_images"])])
+    args.extend(str(value) for value in config.get("extra_args", []))
+    return args
+
+
+def build_univad_extra_args(config: dict[str, Any]) -> list[str]:
+    args = [
+        "--image-size",
+        str(config["image_size"]),
+        "--k-shot",
+        str(config["k_shot"]),
+        "--round",
+        str(config["round"]),
+    ]
+    if config.get("export_heatmaps", False):
+        args.extend(["--export-heatmaps", "--heatmap-max-images", str(config["heatmap_max_images"])])
+    args.extend(str(value) for value in config.get("extra_args", []))
+    return args
 
 
 def ensure_importable_path(path: Path | str) -> None:
@@ -148,11 +373,14 @@ def display_run_plan(run_configs: list[dict[str, Any]]) -> None:
             {
                 "order": idx,
                 "baseline": config["baseline"],
+                "display_baseline": config.get("display_baseline", config["baseline"]),
+                "model_variant": config.get("model_variant_id", "default"),
                 "category": config["category"],
                 "manifest_count": len(config["manifest_paths"]),
                 "severities": ", ".join(config.get("selected_severities", [])) or "all",
                 "summary_name": config["summary_path"].name,
                 "device": config["device"],
+                "model_config": format_model_config(config.get("model_config", {})),
                 "wandb": "on" if config.get("use_wandb") else "off",
             }
         )
@@ -210,8 +438,33 @@ def build_baseline_specs(
     raw_loco_root: Path,
     univad_caption_data_root: Path,
     default_patchcore_device: str,
+    model_config: dict[str, dict[str, Any]] | None = None,
+    model_sweep: dict[str, Any] | None = None,
+    patchcore_extra_args: list[str] | None = None,
     univad_extra_args: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    resolved_model_config = resolve_model_config(model_config)
+    patchcore_config = resolved_model_config["PatchCore"]
+    univad_config = resolved_model_config["UniVAD"]
+    model_variants = expand_model_variants(resolved_model_config, model_sweep)
+    patchcore_variants = [
+        {
+            **variant,
+            "extra_args": patchcore_extra_args
+            if patchcore_extra_args is not None
+            else build_patchcore_extra_args(variant["config"]),
+        }
+        for variant in model_variants["PatchCore"]
+    ]
+    univad_variants = [
+        {
+            **variant,
+            "extra_args": univad_extra_args
+            if univad_extra_args is not None
+            else build_univad_extra_args(variant["config"]),
+        }
+        for variant in model_variants["UniVAD"]
+    ]
     return {
         "PatchCore": {
             "runner_name": "PatchCore manifest shift evaluation",
@@ -235,7 +488,11 @@ def build_baseline_specs(
             "wandb_group": "patchcore",
             "wandb_log_images": True,
             "wandb_max_images": 2,
-            "extra_args": ["--export-heatmaps", "--heatmap-max-images", "2"],
+            "model_config": patchcore_config,
+            "model_variants": patchcore_variants,
+            "extra_args": patchcore_extra_args
+            if patchcore_extra_args is not None
+            else build_patchcore_extra_args(patchcore_config),
             "notes": "PatchCore runner consumes raw LOCO directly and falls back to CPU automatically.",
         },
         "UniVAD": {
@@ -289,18 +546,11 @@ def build_baseline_specs(
             "wandb_group": "univad",
             "wandb_log_images": True,
             "wandb_max_images": 2,
+            "model_config": univad_config,
+            "model_variants": univad_variants,
             "extra_args": univad_extra_args
-            or [
-                "--image-size",
-                "224",
-                "--k-shot",
-                "1",
-                "--round",
-                "0",
-                "--export-heatmaps",
-                "--heatmap-max-images",
-                "2",
-            ],
+            if univad_extra_args is not None
+            else build_univad_extra_args(univad_config),
             "notes": (
                 "UniVAD needs CUDA, recursive clone/submodules, MVTec-Caption style LOCO data, "
                 "precomputed grounding masks, editable GroundingDINO, and local checkpoints."
@@ -413,61 +663,92 @@ def build_requested_run_configs(
     output_suffix = derive_run_output_suffix(manifest_names, normalized_severities)
     for baseline in active_baselines:
         spec = specs[baseline]
-        for category in categories:
-            summary_path = report_root / spec["report_subdir"] / f"{category}_{output_suffix}.json"
-            log_path = report_root / spec["report_subdir"] / "logs" / f"{category}_{output_suffix}.log.txt"
-            runner_cmd = [
-                sys.executable,
-                str(spec["runner_path"]),
-                "--category",
-                category,
-                "--manifest",
-                *[str(path) for path in manifest_paths],
-                "--data-root",
-                str(spec["data_root"]),
-                "--device",
-                spec["device"],
-                *spec["extra_args"],
-            ]
-            if normalized_severities:
-                runner_cmd.extend(["--severities", *normalized_severities])
-            if spec["use_wandb"]:
-                runner_cmd.extend(
-                    [
-                        "--use-wandb",
-                        "--wandb-project",
-                        wandb_project,
-                        "--wandb-group",
-                        spec["wandb_group"],
-                        "--wandb-mode",
-                        wandb_mode,
-                    ]
-                )
-                if spec["wandb_log_images"]:
-                    runner_cmd.extend(["--wandb-log-images", "--wandb-max-images", str(spec["wandb_max_images"])])
-            configs.append(
+        for variant in spec.get(
+            "model_variants",
+            [
                 {
-                    "baseline": baseline,
-                    "category": category,
-                    "device": spec["device"],
-                    "data_root": str(spec["data_root"]),
-                    "manifest_paths": list(manifest_paths),
-                    "manifest_names": list(manifest_names),
-                    "selected_severities": list(normalized_severities),
-                    "summary_path": summary_path,
-                    "log_path": log_path,
-                    "runner_cmd": runner_cmd,
-                    "use_wandb": spec["use_wandb"],
-                    "runner_name": spec["runner_name"],
-                    "runner_path": spec["runner_path"],
-                    "runner_inputs": spec["runner_inputs"],
-                    "runner_outputs": spec["runner_outputs"],
-                    "wandb_group": spec["wandb_group"],
-                    "wandb_log_images": spec["wandb_log_images"],
-                    "wandb_max_images": spec["wandb_max_images"],
-                    "notes": spec["notes"],
+                    "id": "default",
+                    "label": "default",
+                    "output_subdir": None,
+                    "sweep_values": {},
+                    "config": dict(spec.get("model_config", {})),
+                    "extra_args": list(spec.get("extra_args", [])),
                 }
-            )
+            ],
+        ):
+            variant_id = str(variant.get("id", "default"))
+            variant_report_subdir = Path(spec["report_subdir"])
+            if variant.get("output_subdir"):
+                variant_report_subdir = variant_report_subdir / str(variant["output_subdir"])
+            output_dir = report_root / variant_report_subdir
+            log_dir = output_dir / "logs"
+            wandb_group = spec["wandb_group"] if variant_id == "default" else f"{spec['wandb_group']}/{variant_id}"
+            display_baseline = model_variant_display_name(baseline, variant_id)
+            for category in categories:
+                summary_path = output_dir / f"{category}_{output_suffix}.json"
+                log_path = log_dir / f"{category}_{output_suffix}.log.txt"
+                runner_cmd = [
+                    sys.executable,
+                    str(spec["runner_path"]),
+                    "--category",
+                    category,
+                    "--manifest",
+                    *[str(path) for path in manifest_paths],
+                    "--data-root",
+                    str(spec["data_root"]),
+                    "--device",
+                    spec["device"],
+                    "--output",
+                    str(output_dir),
+                    "--log-dir",
+                    str(log_dir),
+                    *variant["extra_args"],
+                ]
+                if normalized_severities:
+                    runner_cmd.extend(["--severities", *normalized_severities])
+                if spec["use_wandb"]:
+                    runner_cmd.extend(
+                        [
+                            "--use-wandb",
+                            "--wandb-project",
+                            wandb_project,
+                            "--wandb-group",
+                            wandb_group,
+                            "--wandb-mode",
+                            wandb_mode,
+                        ]
+                    )
+                    if spec["wandb_log_images"]:
+                        runner_cmd.extend(["--wandb-log-images", "--wandb-max-images", str(spec["wandb_max_images"])])
+                configs.append(
+                    {
+                        "baseline": baseline,
+                        "display_baseline": display_baseline,
+                        "category": category,
+                        "device": spec["device"],
+                        "data_root": str(spec["data_root"]),
+                        "manifest_paths": list(manifest_paths),
+                        "manifest_names": list(manifest_names),
+                        "selected_severities": list(normalized_severities),
+                        "summary_path": summary_path,
+                        "log_path": log_path,
+                        "runner_cmd": runner_cmd,
+                        "use_wandb": spec["use_wandb"],
+                        "runner_name": spec["runner_name"],
+                        "runner_path": spec["runner_path"],
+                        "runner_inputs": spec["runner_inputs"],
+                        "runner_outputs": spec["runner_outputs"],
+                        "wandb_group": wandb_group,
+                        "wandb_log_images": spec["wandb_log_images"],
+                        "wandb_max_images": spec["wandb_max_images"],
+                        "model_variant_id": variant_id,
+                        "model_variant_label": variant.get("label", variant_id),
+                        "model_sweep_values": dict(variant.get("sweep_values", {})),
+                        "model_config": dict(variant.get("config", {})),
+                        "extra_args": list(variant.get("extra_args", [])),
+                        "notes": spec["notes"],
+                    }
+                )
     return configs
 
 
@@ -520,6 +801,7 @@ def display_experiment_preset(
                     "runner_name": specs[baseline]["runner_name"],
                     "data_root": str(specs[baseline]["data_root"]),
                     "device": specs[baseline]["device"],
+                    "model_config": format_model_config(specs[baseline].get("model_config", {})),
                     "wandb_group": specs[baseline]["wandb_group"] if specs[baseline]["use_wandb"] else "off",
                     "wandb_mode": wandb_mode if specs[baseline]["use_wandb"] else "disabled",
                     "runner_outputs": specs[baseline]["runner_outputs"],
@@ -549,7 +831,7 @@ def run_execution_queue(
 
     display_title("Execution Log", f"Started at `{now_string()}` with `{total_runs}` scheduled runs.")
     for idx, config in enumerate(run_configs, start=1):
-        label = f"{config['baseline']} / {config['category']}"
+        label = f"{config.get('display_baseline', config['baseline'])} / {config['category']}"
         started_at = now_string()
         print("=" * 100)
         print(f"[{idx}/{total_runs}] START {label} @ {started_at}")
@@ -567,6 +849,8 @@ def run_execution_queue(
             {
                 "order": idx,
                 "baseline": config["baseline"],
+                "display_baseline": config.get("display_baseline", config["baseline"]),
+                "model_variant": config.get("model_variant_id", "default"),
                 "category": config["category"],
                 "status": status,
                 "returncode": result["returncode"],

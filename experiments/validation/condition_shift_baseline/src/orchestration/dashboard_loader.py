@@ -230,7 +230,8 @@ def load_dashboard_frames(
         summary_exists = summary_path.exists()
         artifact_status_rows.append(
             {
-                "baseline": config["baseline"],
+                "baseline": config.get("display_baseline", config["baseline"]),
+                "baseline_family": config["baseline"],
                 "category": config["category"],
                 "artifact_type": "manifest_summary",
                 "exists": summary_exists,
@@ -240,7 +241,8 @@ def load_dashboard_frames(
         if not summary_exists:
             missing_summary_rows.append(
                 {
-                    "baseline": config["baseline"],
+                    "baseline": config.get("display_baseline", config["baseline"]),
+                    "baseline_family": config["baseline"],
                     "category": config["category"],
                     "summary_path": str(summary_path),
                     "log_path": str(config["log_path"]),
@@ -249,6 +251,7 @@ def load_dashboard_frames(
             continue
 
         summary = load_json_if_exists(summary_path)
+        summary_config = summary.get("config", {})
         metrics = summary.get("metrics", {})
         payload = summary.get("payload", {})
         clean_good = payload.get("clean_good", {})
@@ -267,13 +270,19 @@ def load_dashboard_frames(
             for value in clean_scores.get("clean_structural_anomaly_scores", [])
         ]
         clean_image_auroc = metrics.get("clean_image_auroc")
-        baseline = summary["baseline"]
+        baseline_family = summary["baseline"]
+        baseline = config.get("display_baseline", baseline_family)
+        model_variant_id = config.get("model_variant_id", "default")
+        model_variant_label = config.get("model_variant_label", model_variant_id)
+        model_sweep_values = config.get("model_sweep_values", {})
         category = summary["class_name"]
         for sample_type, sample_rows in payload.get("clean_reference_maps", {}).items():
             for sample in sample_rows:
                 clean_reference_rows.append(
                     {
                         "baseline": baseline,
+                        "baseline_family": baseline_family,
+                        "model_variant": model_variant_id,
                         "category": category,
                         "sample_type": sample.get("sample_type", sample_type),
                         "image_path": sample.get("image_path"),
@@ -289,8 +298,14 @@ def load_dashboard_frames(
         clean_manifest_rows.append(
             {
                 "baseline": baseline,
+                "baseline_family": baseline_family,
+                "model_variant": model_variant_id,
+                "model_variant_label": model_variant_label,
+                "model_sweep_values": json.dumps(model_sweep_values, ensure_ascii=True, sort_keys=True),
                 "category": category,
                 "clean_image_auroc": clean_image_auroc,
+                "model_k_shot": summary_config.get("k_shot"),
+                "model_round": summary_config.get("round"),
                 "clean_good_mean": metrics.get("clean_good_mean", clean_good.get("mean")),
                 "clean_good_median": metrics.get("clean_good_median", clean_good.get("median")),
                 "clean_anomaly_mean": metrics.get("clean_anomaly_mean", clean_anomaly.get("mean")),
@@ -339,6 +354,9 @@ def load_dashboard_frames(
                 shifted_image_auroc_vs_structural = item.get("shifted_image_auroc_vs_structural_anomaly")
                 row = {
                     "baseline": baseline,
+                    "baseline_family": baseline_family,
+                    "model_variant": model_variant_id,
+                    "model_variant_label": model_variant_label,
                     "category": category,
                     "shift_family": aug_type,
                     "severity": severity,
@@ -369,6 +387,8 @@ def load_dashboard_frames(
                 distribution_rows.append(
                     {
                         "baseline": baseline,
+                        "baseline_family": baseline_family,
+                        "model_variant": model_variant_id,
                         "category": category,
                         "shift_family": aug_type,
                         "severity": severity,
@@ -384,6 +404,8 @@ def load_dashboard_frames(
                     gallery_rows.append(
                         {
                             "baseline": baseline,
+                            "baseline_family": baseline_family,
+                            "model_variant": model_variant_id,
                             "category": category,
                             "shift_family": aug_type,
                             "severity": severity,
@@ -417,6 +439,9 @@ def load_dashboard_frames(
             scoreboard_rows.append(
                 {
                     "baseline": baseline,
+                    "baseline_family": baseline_family,
+                    "model_variant": model_variant_id,
+                    "model_variant_label": model_variant_label,
                     "category": category,
                     "clean_image_auroc": clean_image_auroc,
                     "mean_shifted_normal_fpr": metrics.get("mean_shifted_normal_fpr", safe_mean(fpr_values)),

@@ -15,6 +15,30 @@ dataset:
   query_logical_anomaly_clean: "data/query_logical_anomaly_clean"
   query_logical_anomaly_augmented: "optional"
   query_structural_anomaly_clean: "data/query_structural_anomaly_clean"
+  query_structural_anomaly_augmented: "optional"
+
+models:
+  univad:
+    image_size: 224
+    k_shot: 1
+    round: 0
+    export_heatmaps: true
+    heatmap_max_images: 2
+  patchcore:
+    resize: 256
+    imagesize: 224
+    batch_size: 1
+    num_workers: 0
+    sampler_percentage: 0.001
+    export_heatmaps: true
+    heatmap_max_images: 2
+
+sweep:
+  enabled: false
+  models:
+    univad:
+      k_shot: [1, 4]
+      round: [0, 1, 2]
 
 shift_protocol:
   kinds:
@@ -34,7 +58,7 @@ shift_protocol:
   preserve_semantics: true
 
 evaluation:
-  few_shot_k: 4
+  few_shot_k: 1
   threshold_policy: clean_max
   primary_metric: delta_fpr_augmented_minus_clean
   secondary_metrics:
