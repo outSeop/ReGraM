@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image
+
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
@@ -18,6 +20,7 @@ from graph_probe.batch_compare import (  # noqa: E402
     row_identity,
     summarize_condition_scores,
 )
+from graph_probe.component_summary import build_grounding_mask_cluster_summary  # noqa: E402
 from graph_probe.graph_consistency import graph_consistency_score  # noqa: E402
 from graph_probe.graph_features import edge_feature  # noqa: E402
 from graph_probe.run_logical_probe import run_logical_probe  # noqa: E402
@@ -225,6 +228,60 @@ class GraphProbeTests(unittest.TestCase):
             self.assertTrue((tmp_path / "summary.csv").exists())
             self.assertEqual(set(summary_df["condition"]), {"brightness_high", "logical_anomaly"})
             self.assertIn("S_edge_mean", summary_df.columns)
+
+    def test_component_summary_builds_shifted_rows_from_existing_masks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            data_root = repo_root / "data" / "row" / "mvtec_loco_anomaly_detection"
+            image_dir = data_root / "breakfast_box" / "test" / "good"
+            image_dir.mkdir(parents=True)
+            image_path = image_dir / "000.png"
+            Image.new("RGB", (20, 20), (120, 100, 80)).save(image_path)
+
+            mask_root = repo_root / "external" / "UniVAD" / "masks" / "mvtec_loco_caption"
+            mask_path = mask_root / "breakfast_box" / "test" / "good" / "000" / "grounding_mask.png"
+            mask_path.parent.mkdir(parents=True)
+            mask_image = Image.new("RGB", (20, 20), (0, 0, 0))
+            for y_coord in range(2, 8):
+                for x_coord in range(2, 8):
+                    mask_image.putpixel((x_coord, y_coord), (255, 0, 0))
+            for y_coord in range(10, 17):
+                for x_coord in range(10, 17):
+                    mask_image.putpixel((x_coord, y_coord), (0, 255, 0))
+            mask_image.save(mask_path)
+
+            manifest = repo_root / "manifests" / "query_brightness.jsonl"
+            manifest.parent.mkdir(parents=True)
+            entry = {
+                "source_path": str(image_path.relative_to(repo_root)),
+                "source_path_mode": "repo_relative",
+                "category": "breakfast_box",
+                "source_id": "000.png",
+                "augmentation_type": "brightness",
+                "severity": "high",
+                "seed": 1,
+                "params": {"factor": 0.4},
+            }
+            manifest.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+            output = repo_root / "summary.json"
+
+            summary = build_grounding_mask_cluster_summary(
+                repo_root=repo_root,
+                manifest_path=manifest,
+                category="breakfast_box",
+                augmentation_type="brightness",
+                severity="high",
+                limit=10,
+                mask_root=mask_root,
+                mask_data_root=data_root,
+                cluster_config={"min_mask_area": 1},
+                output_path=output,
+            )
+
+            self.assertEqual(summary["evaluated_count"], 1)
+            self.assertEqual(summary["rows"][0]["base_image_id"], "000.png")
+            self.assertGreater(summary["rows"][0]["component_count"], 0)
+            self.assertTrue(output.exists())
 
 
 def _row(source_id: str, nodes: list[dict]) -> dict:

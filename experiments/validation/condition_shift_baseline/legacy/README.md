@@ -15,7 +15,8 @@
 
 ## 현재 원칙
 
-- 기본 경로는 `src/core/build_query_manifest.py` + `src/core/run_patchcore_manifest_shift.py`다.
+- 기본 경로는 `src/data/build_query_manifest.py` + `src/runners/patchcore/run_manifest_shift.py`다.
+- `src/core/build_query_manifest.py`와 `src/core/run_patchcore_manifest_shift.py`는 이전 경로 호환 wrapper로만 본다.
 - 노트북은 Git으로 repo를 가져오고, versioned `.py`를 직접 호출한다.
 - dataset이나 작은 보고서 자산만 필요하면 `colab/bootstrap_runtime.py`로 별도 복사한다.
 

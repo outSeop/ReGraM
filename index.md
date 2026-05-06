@@ -1,5 +1,7 @@
 # 프로젝트 인수인계 문서
 
+문서 전체 입구는 [docs/README.md](docs/README.md)를 본다. Condition shift baseline 검증 실험은 [experiments/validation/condition_shift_baseline/README.md](experiments/validation/condition_shift_baseline/README.md)와 [experiments/validation/condition_shift_baseline/docs/FILE_MAP.md](experiments/validation/condition_shift_baseline/docs/FILE_MAP.md)를 기준으로 본다.
+
 ## 1. 프로젝트 개요
 
 본 프로젝트는 **normal-only few-shot setting**에서, 소수의 정상 reference 이미지로부터 **component 및 component 관계의 정상 규칙(rule)** 을 형성하고, query 이미지가 이 규칙과 얼마나 정합하는지를 기반으로 **logical anomaly**를 탐지하는 방향을 목표로 한다.

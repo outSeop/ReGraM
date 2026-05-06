@@ -2,8 +2,9 @@
 
 이 폴더는 `기존 logical AD baseline이 실제로 condition shift에 취약한가?`를 검증하기 위한 실험 스캐폴드다.
 
-빠른 파일 역할 구분은 [docs/FILE_MAP.md](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/docs/FILE_MAP.md)를 먼저 본다.
-실제로 실행되는 Python 소스만 보고 싶으면 [src/README.md](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/src/README.md)를 본다.
+빠른 파일 역할 구분은 [docs/FILE_MAP.md](docs/FILE_MAP.md)를 먼저 본다.
+실제로 실행되는 Python 소스만 보고 싶으면 [src/README.md](src/README.md)를 본다.
+문서 전체 지도는 [docs/README.md](docs/README.md)를 본다.
 
 ## 목적
 
@@ -29,7 +30,7 @@
 - `Position-only baseline`
   - 내부 단순 기준선
 
-baseline 조사와 코드 출처는 [docs/baseline_survey.md](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/docs/baseline_survey.md)에 정리한다.
+baseline 조사와 코드 출처는 [docs/baseline_survey.md](docs/baseline_survey.md)에 정리한다.
 
 ## 최소 실험 구성
 
@@ -37,7 +38,7 @@ baseline 조사와 코드 출처는 [docs/baseline_survey.md](/Users/song-inseop
   - few-shot normal reference
 - `query_normal_clean`
   - clean normal query
-- `manifests/*.jsonl` (repo-top [manifests/](/Users/song-inseop/연구/ReGraM/manifests))
+- `manifests/*.jsonl` (repo-top [manifests/](../../../manifests))
   - 원본 경로와 augmentation 계약을 기록한 on-the-fly query manifest
   - **canonical location은 repo-top `manifests/` 하나**. `source_path_mode: "repo_relative"` 포맷으로 저장한다. 실험 하위에는 manifest를 두지 않는다.
 
@@ -92,9 +93,21 @@ baseline 조사와 코드 출처는 [docs/baseline_survey.md](/Users/song-inseop
 - 100줄 이상 setup/run/report helper는 Python 모듈로 분리한다.
 - Colab에서는 먼저 Git으로 repo를 clone 또는 pull 하고, 그 다음 dataset bootstrap이 필요하면 `colab/bootstrap_runtime.py` 같은 별도 Python 스크립트를 호출한다.
 - runner 실패 시 traceback을 가공하지 않고, runner가 남긴 `summary.json` 또는 `log.txt` 경로를 그대로 보여준다.
-- 현재 기본 노트북 진입점은 [notebook/01_run_orchestrator.ipynb](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/notebook/01_run_orchestrator.ipynb) 이다.
-- 분석 전용은 [notebook/02_analysis_dashboard.ipynb](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/notebook/02_analysis_dashboard.ipynb),
-  figure export 전용은 [notebook/03_figure_export.ipynb](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/notebook/03_figure_export.ipynb)을 사용한다.
+
+canonical notebook 역할은 아래처럼 분리한다.
+
+- [notebook/01_run_orchestrator.ipynb](notebook/01_run_orchestrator.ipynb)
+  - runtime setup, dataset 준비, baseline/category/manifest 선택, runner 실행
+  - 산출물은 `summary.json`과 `log.txt` handoff까지만 확인
+  - 비교 분석 table/plot과 보고서 figure export는 하지 않음
+- [notebook/02_analysis_dashboard.ipynb](notebook/02_analysis_dashboard.ipynb)
+  - 저장된 summary/log를 읽어 clean/shift metric table, worst-case ranking, score distribution을 확인
+  - runner 실행이나 runtime setup은 하지 않음
+- [notebook/03_figure_export.ipynb](notebook/03_figure_export.ipynb)
+  - 저장된 summary에서 보고서/발표용 CSV와 PNG를 재생성
+  - exploratory dashboard 표시나 실험 실행은 하지 않음
+
+`notebook/experiment.ipynb`, `notebook/test.ipynb`는 canonical workflow가 아니라 임시 scratch로만 본다.
 
 ## Git 기반 notebook 원칙
 
@@ -102,7 +115,7 @@ baseline 조사와 코드 출처는 [docs/baseline_survey.md](/Users/song-inseop
 - Colab이나 서버 runtime에서는 먼저 repo를 clone 또는 pull 해서 코드 상태를 맞춘다.
 - notebook은 Drive sync나 코드 문자열 내장을 통해 helper를 들고 있지 않는다.
 - dataset이나 작은 보조 자산만 runtime으로 따로 복사한다.
-- Colab 실행 순서는 `git pull` -> dataset bootstrap -> runtime setup/readiness -> runner 실행 -> dashboard 로 유지한다.
+- Colab 실행 순서는 `git pull` -> dataset bootstrap -> runtime setup/readiness -> runner 실행 -> output handoff 로 유지한다.
 - notebook output은 커밋 전에 비운다. 코드, 설정, small summary, 공식 Markdown만 Git source of truth로 둔다.
 
 ## Python runner 출력 계약
@@ -184,7 +197,7 @@ PatchCore manifest runner는 옵션으로 wandb tracking을 켤 수 있다.
 예시:
 
 ```bash
-python experiments/validation/condition_shift_baseline/src/core/run_patchcore_manifest_shift.py \
+python experiments/validation/condition_shift_baseline/src/runners/patchcore/run_manifest_shift.py \
   --category breakfast_box \
   --manifest manifests/query_motion_blur.jsonl \
   --severities low \

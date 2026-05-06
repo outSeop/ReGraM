@@ -6,8 +6,8 @@
 - dataset: `MVTec LOCO`
 - category: `breakfast_box`
 - result source:
-  - [breakfast_box_multi.json](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/reports/patchcore_manifest_shift/breakfast_box_multi.json)
-  - per-shift summaries under [patchcore_manifest_shift](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/reports/patchcore_manifest_shift)
+  - [breakfast_box_multi.json](patchcore_manifest_shift/breakfast_box_multi.json)
+  - per-shift summaries under [patchcore_manifest_shift](patchcore_manifest_shift)
 - note:
   - this report is based on the currently saved `multi` summary, which was produced before the later `shift x severity` run split.
   - therefore the interpretation here is valid for the saved numeric results, but the newer wandb logging layout is not required to read this report.

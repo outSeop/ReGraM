@@ -34,4 +34,5 @@
 
 현재 진행 요약:
 
-- [report_2026-04-20_patchcore_univad_progress.md](/Users/song-inseop/연구/ReGraM/experiments/validation/condition_shift_baseline/reports/report_2026-04-20_patchcore_univad_progress.md)
+- [report_2026-04-20_patchcore_univad_progress.md](report_2026-04-20_patchcore_univad_progress.md)
+- [report_2026-04-22_patchcore_condition_shift_findings.md](report_2026-04-22_patchcore_condition_shift_findings.md)

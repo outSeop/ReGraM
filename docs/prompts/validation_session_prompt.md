@@ -1,6 +1,6 @@
 # 검증 세션 역할 프롬프트 v1
 
-이 문서는 [docs/session_common_prompt.md](/Users/song-inseop/연구/ReGraM/docs/session_common_prompt.md)를 공통 베이스로 사용한다.  
+이 문서는 [docs/session_common_prompt.md](../session_common_prompt.md)를 공통 베이스로 사용한다.
 아래 내용은 검증 세션에만 추가로 덧붙이는 역할별 확장 규칙이다.
 
 ## 역할의 책임 범위
