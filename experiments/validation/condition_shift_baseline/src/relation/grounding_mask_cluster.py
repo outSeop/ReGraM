@@ -1,3 +1,12 @@
+"""Rule-based mask normalization for relation graph component nodes.
+
+Usage example:
+    image = np.asarray(PIL.Image.open("image.png").convert("RGB"))
+    raw_masks = [{"mask_id": "part_0", "mask": binary_mask, "score": 0.9}]
+    nodes = cluster_masks_to_components(image, raw_masks, config=DEFAULT_CONFIG)
+    summary = summarize_components(nodes)
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,7 +39,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 @dataclass(frozen=True)
-class MaskRecord:
+class MaskFeature:
     mask_id: Any
     mask: np.ndarray
     area: int
@@ -41,13 +50,13 @@ class MaskRecord:
     std_rgb: list[float]
     mean_lab: list[float] | None
     std_lab: list[float] | None
-    confidence: float | None
+    score: float | None
     label: str | None
     source: str
     debug: dict[str, Any]
 
 
-def cluster_grounding_masks(
+def cluster_masks_to_components(
     image_rgb: np.ndarray,
     raw_masks: list[Any],
     *,
@@ -66,22 +75,13 @@ def cluster_grounding_masks(
     height, width = image.shape[:2]
     image_area = int(height * width)
     lab_image = _rgb_to_lab(image) if resolved_config["use_lab_color"] else None
-    cluster_candidate_area_ratio = _cluster_candidate_area_ratio(resolved_config)
-    records = _normalize_raw_masks(
+    records = compute_mask_features(
+        image,
         raw_masks,
-        image=image,
-        lab_image=lab_image,
-        image_area=image_area,
-        min_mask_area=int(resolved_config["min_mask_area"]),
+        resolved_config,
     )
 
-    thing_records: list[MaskRecord] = []
-    small_records: list[MaskRecord] = []
-    for record in records:
-        if record.area_ratio <= cluster_candidate_area_ratio:
-            small_records.append(record)
-        else:
-            thing_records.append(record)
+    thing_records, small_records = split_large_small(records, resolved_config)
 
     nodes: list[dict[str, Any]] = []
     nodes.extend(
@@ -151,6 +151,22 @@ def cluster_grounding_masks(
     return nodes
 
 
+def cluster_grounding_masks(
+    image_rgb: np.ndarray,
+    raw_masks: list[Any],
+    *,
+    config: dict[str, Any] | None = None,
+    category: str | None = None,
+) -> list[dict[str, Any]]:
+    """Backward-compatible wrapper for `cluster_masks_to_components`."""
+    return cluster_masks_to_components(
+        image_rgb,
+        raw_masks,
+        config=config,
+        category=category,
+    )
+
+
 def _cluster_candidate_area_ratio(config: dict[str, Any]) -> float:
     value = config.get("cluster_candidate_area_ratio")
     if value is None:
@@ -181,6 +197,7 @@ def resolve_cluster_config(config: dict[str, Any] | None = None, *, category: st
 
 
 def raw_masks_from_label_image(label_image: np.ndarray | Image.Image, *, background_rgb: tuple[int, int, int] = (0, 0, 0)) -> list[dict[str, Any]]:
+    """Split an RGB label image into binary raw masks, one per non-background color."""
     labels = _as_rgb_array(np.asarray(label_image.convert("RGB")) if isinstance(label_image, Image.Image) else label_image)
     flat_colors = np.unique(labels.reshape(-1, 3), axis=0)
     raw_masks: list[dict[str, Any]] = []
@@ -203,6 +220,148 @@ def raw_masks_from_label_image(label_image: np.ndarray | Image.Image, *, backgro
     return raw_masks
 
 
+def compute_mask_features(
+    image_rgb: np.ndarray,
+    raw_masks: list[Any],
+    config: dict[str, Any] | None = None,
+) -> list[MaskFeature]:
+    """Compute deterministic geometric and color features for raw masks."""
+    resolved_config = resolve_cluster_config(config)
+    image = _as_rgb_array(image_rgb)
+    image_area = int(image.shape[0] * image.shape[1])
+    lab_image = _rgb_to_lab(image) if resolved_config["use_lab_color"] else None
+    return _normalize_raw_masks(
+        raw_masks,
+        image=image,
+        lab_image=lab_image,
+        image_area=image_area,
+        min_mask_area=int(resolved_config["min_mask_area"]),
+    )
+
+
+def split_large_small(
+    mask_features: list[MaskFeature],
+    config: dict[str, Any] | None = None,
+) -> tuple[list[MaskFeature], list[MaskFeature]]:
+    """Split features into graph-preserved things and small cluster candidates."""
+    resolved_config = resolve_cluster_config(config)
+    candidate_area_ratio = _cluster_candidate_area_ratio(resolved_config)
+    thing_features: list[MaskFeature] = []
+    small_features: list[MaskFeature] = []
+    for feature in mask_features:
+        if feature.area_ratio <= candidate_area_ratio:
+            small_features.append(feature)
+        else:
+            thing_features.append(feature)
+    return thing_features, small_features
+
+
+def bbox_gap(bbox_a: list[int], bbox_b: list[int]) -> float:
+    """Return Euclidean gap between two boxes; overlapping boxes have gap 0."""
+    return _bbox_gap(bbox_a, bbox_b)
+
+
+def color_distance(feat_a: MaskFeature, feat_b: MaskFeature, use_lab: bool = True) -> float:
+    """Return feature color distance using Lab when available, otherwise RGB."""
+    return _color_distance(feat_a, feat_b, use_lab_color=use_lab)
+
+
+def build_small_mask_adjacency(
+    small_features: list[MaskFeature],
+    image_shape: tuple[int, int],
+    config: dict[str, Any] | None = None,
+) -> dict[int, list[int]]:
+    """Build an undirected adjacency map for small mask cluster candidates."""
+    resolved_config = resolve_cluster_config(config)
+    height, width = image_shape
+    diagonal = float((height**2 + width**2) ** 0.5)
+    max_centroid_dist = float(resolved_config["max_centroid_dist_ratio"]) * diagonal
+    max_bbox_gap = float(resolved_config["max_bbox_gap_ratio"]) * diagonal
+    adjacency: dict[int, list[int]] = {index: [] for index in range(len(small_features))}
+    for left_index, left in enumerate(small_features):
+        for right_index in range(left_index + 1, len(small_features)):
+            right = small_features[right_index]
+            relation = _pair_relation(
+                left,
+                right,
+                max_centroid_dist=max_centroid_dist,
+                max_bbox_gap=max_bbox_gap,
+                max_color_dist=float(resolved_config["max_color_dist"]),
+                use_lab_color=bool(resolved_config["use_lab_color"]),
+                allow_mixed_labels_with_color=bool(resolved_config["allow_mixed_labels_with_color"]),
+            )
+            if relation["is_neighbor"]:
+                adjacency[left_index].append(right_index)
+                adjacency[right_index].append(left_index)
+    return {index: sorted(neighbors) for index, neighbors in adjacency.items()}
+
+
+def connected_components(adjacency: dict[int, list[int]]) -> list[list[int]]:
+    """Return connected components from an undirected adjacency mapping."""
+    groups: list[list[int]] = []
+    seen: set[int] = set()
+    for start_index in sorted(adjacency):
+        if start_index in seen:
+            continue
+        stack = [start_index]
+        seen.add(start_index)
+        group: list[int] = []
+        while stack:
+            current = stack.pop()
+            group.append(current)
+            for next_index in adjacency.get(current, []):
+                if next_index in seen:
+                    continue
+                seen.add(next_index)
+                stack.append(next_index)
+        groups.append(sorted(group))
+    return groups
+
+
+def build_thing_node(feat: MaskFeature, node_id: str) -> dict[str, Any]:
+    """Build a JSON-serializable node for one preserved large mask."""
+    return _node_from_features(
+        [feat],
+        node_type="thing",
+        node_id=node_id,
+        debug={"reason": "area_ratio>cluster_candidate_area_ratio"},
+    )
+
+
+def build_small_isolated_node(feat: MaskFeature, node_id: str, reason: str) -> dict[str, Any]:
+    """Build a JSON-serializable node for one unclustered small mask."""
+    return _node_from_features(
+        [feat],
+        node_type="small_isolated",
+        node_id=node_id,
+        debug={"reason": reason},
+    )
+
+
+def build_stuff_cluster_node(
+    members: list[MaskFeature],
+    image_shape: tuple[int, int],
+    node_id: str,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a JSON-serializable node from the union of clustered small masks."""
+    resolved_config = resolve_cluster_config(config)
+    debug = _cluster_debug(members, [], image_shape=image_shape)
+    debug["reason"] = "small_masks_clustered"
+    debug["valid"] = _is_valid_stuff_cluster(
+        members,
+        debug,
+        image_area=int(image_shape[0] * image_shape[1]),
+        config=resolved_config,
+    )
+    return _node_from_features(
+        members,
+        node_type="stuff_cluster",
+        node_id=node_id,
+        debug={"reason": "small_masks_clustered", "cluster_conditions": debug},
+    )
+
+
 def _normalize_raw_masks(
     raw_masks: list[Any],
     *,
@@ -210,8 +369,8 @@ def _normalize_raw_masks(
     lab_image: np.ndarray | None,
     image_area: int,
     min_mask_area: int,
-) -> list[MaskRecord]:
-    records: list[MaskRecord] = []
+) -> list[MaskFeature]:
+    records: list[MaskFeature] = []
     for index, raw_mask in enumerate(raw_masks):
         parsed = _parse_raw_mask(raw_mask, default_mask_id=index)
         mask = np.asarray(parsed["mask"], dtype=bool)
@@ -223,7 +382,7 @@ def _normalize_raw_masks(
         if area < min_mask_area:
             continue
         records.append(
-            MaskRecord(
+            MaskFeature(
                 mask_id=parsed["mask_id"],
                 mask=mask,
                 area=area,
@@ -234,7 +393,7 @@ def _normalize_raw_masks(
                 std_rgb=_masked_std(image, mask),
                 mean_lab=_masked_mean(lab_image, mask) if lab_image is not None else None,
                 std_lab=_masked_std(lab_image, mask) if lab_image is not None else None,
-                confidence=_optional_float(parsed.get("score")),
+                score=_optional_float(parsed.get("score")),
                 label=_optional_str(parsed.get("label")),
                 source=_optional_str(parsed.get("source")) or "raw_mask",
                 debug={key: _jsonable(value) for key, value in parsed.get("debug", {}).items()},
@@ -275,17 +434,17 @@ def _parse_raw_mask(raw_mask: Any, *, default_mask_id: int) -> dict[str, Any]:
 
 
 def _cluster_small_records(
-    records: list[MaskRecord],
+    records: list[MaskFeature],
     *,
     image_shape: tuple[int, int],
     config: dict[str, Any],
-) -> list[tuple[list[MaskRecord], dict[str, Any]]]:
+) -> list[tuple[list[MaskFeature], dict[str, Any]]]:
     if not records:
         return []
     height, width = image_shape
     diagonal = float((height**2 + width**2) ** 0.5)
     max_centroid_dist = float(config["max_centroid_dist_ratio"]) * diagonal
-    max_bbox_gap = float(config["max_bbox_gap_ratio"]) * max(height, width)
+    max_bbox_gap = float(config["max_bbox_gap_ratio"]) * diagonal
     adjacency: list[set[int]] = [set() for _ in records]
     edge_distances: dict[tuple[int, int], dict[str, float | bool | str]] = {}
     for left_index, left in enumerate(records):
@@ -305,7 +464,7 @@ def _cluster_small_records(
                 adjacency[right_index].add(left_index)
                 edge_distances[(left_index, right_index)] = relation
 
-    groups: list[tuple[list[MaskRecord], dict[str, Any]]] = []
+    groups: list[tuple[list[MaskFeature], dict[str, Any]]] = []
     seen: set[int] = set()
     for start_index in range(len(records)):
         if start_index in seen:
@@ -332,16 +491,16 @@ def _cluster_small_records(
 
 
 def _absorb_nearby_invalid_groups(
-    groups: list[tuple[list[MaskRecord], dict[str, Any]]],
+    groups: list[tuple[list[MaskFeature], dict[str, Any]]],
     *,
     image_shape: tuple[int, int],
     config: dict[str, Any],
-) -> list[tuple[list[MaskRecord], dict[str, Any]]]:
+) -> list[tuple[list[MaskFeature], dict[str, Any]]]:
     if not bool(config.get("absorb_nearby_singletons", False)):
         return groups
-    valid_groups: list[list[MaskRecord]] = []
+    valid_groups: list[list[MaskFeature]] = []
     absorbed_debug: list[list[dict[str, Any]]] = []
-    invalid_groups: list[tuple[list[MaskRecord], dict[str, Any]]] = []
+    invalid_groups: list[tuple[list[MaskFeature], dict[str, Any]]] = []
     image_area = int(image_shape[0] * image_shape[1])
     for group, debug in groups:
         if _is_valid_stuff_cluster(group, debug, image_area=image_area, config=config):
@@ -355,11 +514,11 @@ def _absorb_nearby_invalid_groups(
     height, width = image_shape
     diagonal = float((height**2 + width**2) ** 0.5)
     max_centroid_dist = float(config["absorb_max_centroid_dist_ratio"]) * diagonal
-    max_bbox_gap = float(config["absorb_max_bbox_gap_ratio"]) * max(height, width)
+    max_bbox_gap = float(config["absorb_max_bbox_gap_ratio"]) * diagonal
     absorb_max_area_ratio = config.get("absorb_max_area_ratio")
     if absorb_max_area_ratio is None:
         absorb_max_area_ratio = _cluster_candidate_area_ratio(config)
-    remaining_invalid: list[tuple[list[MaskRecord], dict[str, Any]]] = []
+    remaining_invalid: list[tuple[list[MaskFeature], dict[str, Any]]] = []
 
     for group, debug in invalid_groups:
         if len(group) > int(config["absorb_max_members"]):
@@ -396,7 +555,7 @@ def _absorb_nearby_invalid_groups(
             }
         )
 
-    absorbed_groups: list[tuple[list[MaskRecord], dict[str, Any]]] = []
+    absorbed_groups: list[tuple[list[MaskFeature], dict[str, Any]]] = []
     for group, absorption_events in zip(valid_groups, absorbed_debug, strict=True):
         debug = _cluster_debug(group, [], image_shape=image_shape)
         if absorption_events:
@@ -409,7 +568,7 @@ def _absorb_nearby_invalid_groups(
     return absorbed_groups + remaining_invalid
 
 
-def _group_relation(left_group: list[MaskRecord], right_group: list[MaskRecord]) -> dict[str, float]:
+def _group_relation(left_group: list[MaskFeature], right_group: list[MaskFeature]) -> dict[str, float]:
     best_centroid_dist = float("inf")
     best_bbox_gap = float("inf")
     for left in left_group:
@@ -426,8 +585,8 @@ def _group_relation(left_group: list[MaskRecord], right_group: list[MaskRecord])
 
 
 def _pair_relation(
-    left: MaskRecord,
-    right: MaskRecord,
+    left: MaskFeature,
+    right: MaskFeature,
     *,
     max_centroid_dist: float,
     max_bbox_gap: float,
@@ -449,7 +608,7 @@ def _pair_relation(
     else:
         feature_ok = color_dist <= max_color_dist
         feature_reason = "similar_color" if feature_ok else "color_distance_too_large"
-    spatial_ok = centroid_dist <= max_centroid_dist and bbox_gap <= max_bbox_gap
+    spatial_ok = centroid_dist <= max_centroid_dist or bbox_gap <= max_bbox_gap
     return {
         "is_neighbor": bool(spatial_ok and feature_ok),
         "centroid_dist": float(centroid_dist),
@@ -461,7 +620,7 @@ def _pair_relation(
 
 
 def _cluster_debug(
-    group: list[MaskRecord],
+    group: list[MaskFeature],
     edges: list[dict[str, Any]],
     *,
     image_shape: tuple[int, int],
@@ -490,7 +649,7 @@ def _cluster_debug(
 
 
 def _is_valid_stuff_cluster(
-    group: list[MaskRecord],
+    group: list[MaskFeature],
     cluster_debug: dict[str, Any],
     *,
     image_area: int,
@@ -515,7 +674,7 @@ def _invalid_cluster_reason(cluster_debug: dict[str, Any], *, config: dict[str, 
 
 
 def _node_from_records(
-    records: list[MaskRecord],
+    records: list[MaskFeature],
     *,
     node_type: str,
     image: np.ndarray,
@@ -525,7 +684,7 @@ def _node_from_records(
 ) -> dict[str, Any]:
     union_mask = _union_mask(records)
     member_stats = _member_stats(records, union_mask=union_mask, image_shape=image.shape[:2])
-    scores = [record.confidence for record in records if record.confidence is not None]
+    scores = [record.score for record in records if record.score is not None]
     return {
         "node_id": "",
         "node_type": node_type,
@@ -551,7 +710,61 @@ def _node_from_records(
     }
 
 
-def _member_stats(records: list[MaskRecord], *, union_mask: np.ndarray, image_shape: tuple[int, int]) -> dict[str, Any]:
+def _node_from_features(
+    records: list[MaskFeature],
+    *,
+    node_type: str,
+    node_id: str,
+    debug: dict[str, Any],
+) -> dict[str, Any]:
+    union_mask = _union_mask(records)
+    member_stats = _member_stats(records, union_mask=union_mask, image_shape=union_mask.shape)
+    scores = [record.score for record in records if record.score is not None]
+    area = int(union_mask.sum())
+    image_area = int(union_mask.shape[0] * union_mask.shape[1])
+    return {
+        "node_id": node_id,
+        "node_type": node_type,
+        "source": "grounding_mask_cluster",
+        "mask_ids": [_jsonable(record.mask_id) for record in records],
+        "area": area,
+        "area_ratio": float(area / image_area),
+        "bbox": _bbox(union_mask),
+        "centroid": _centroid(union_mask),
+        "mean_rgb": _weighted_mean([record.mean_rgb for record in records], [record.area for record in records]),
+        "std_rgb": _weighted_mean([record.std_rgb for record in records], [record.area for record in records]),
+        "mean_lab": _weighted_optional_mean([record.mean_lab for record in records], [record.area for record in records]),
+        "std_lab": _weighted_optional_mean([record.std_lab for record in records], [record.area for record in records]),
+        "num_members": len(records),
+        "member_stats": member_stats,
+        "confidence": float(mean(scores)) if scores else None,
+        "debug": {
+            **debug,
+            "raw_sources": sorted({record.source for record in records}),
+            "raw_labels": sorted({record.label for record in records if record.label is not None}),
+            "record_debug": [record.debug for record in records if record.debug],
+        },
+    }
+
+
+def summarize_components(nodes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize component node counts for quick debugging and JSON reports."""
+    node_type_counts: dict[str, int] = {}
+    raw_mask_ids: set[str] = set()
+    for node in nodes:
+        node_type = str(node.get("node_type", ""))
+        node_type_counts[node_type] = node_type_counts.get(node_type, 0) + 1
+        raw_mask_ids.update(str(mask_id) for mask_id in node.get("mask_ids", []))
+    return {
+        "num_nodes": len(nodes),
+        "num_thing": node_type_counts.get("thing", 0),
+        "num_stuff_cluster": node_type_counts.get("stuff_cluster", 0),
+        "num_small_isolated": node_type_counts.get("small_isolated", 0),
+        "num_raw_masks_used": len(raw_mask_ids),
+    }
+
+
+def _member_stats(records: list[MaskFeature], *, union_mask: np.ndarray, image_shape: tuple[int, int]) -> dict[str, Any]:
     areas = [int(record.area) for record in records]
     centroids = [record.centroid for record in records]
     mean_rgbs = [record.mean_rgb for record in records]
@@ -573,7 +786,7 @@ def _member_stats(records: list[MaskRecord], *, union_mask: np.ndarray, image_sh
     }
 
 
-def _member_color_distances(records: list[MaskRecord]) -> list[float]:
+def _member_color_distances(records: list[MaskFeature]) -> list[float]:
     distances: list[float] = []
     for left_index, left in enumerate(records):
         for right in records[left_index + 1 :]:
@@ -581,7 +794,7 @@ def _member_color_distances(records: list[MaskRecord]) -> list[float]:
     return distances
 
 
-def _size_class(record: MaskRecord, config: dict[str, Any]) -> str:
+def _size_class(record: MaskFeature, config: dict[str, Any]) -> str:
     if record.area_ratio >= float(config["large_area_ratio"]):
         return "large"
     if record.area_ratio < float(config["small_area_ratio"]):
@@ -589,13 +802,13 @@ def _size_class(record: MaskRecord, config: dict[str, Any]) -> str:
     return "medium_below_large_threshold"
 
 
-def _thing_reason(record: MaskRecord, config: dict[str, Any]) -> str:
+def _thing_reason(record: MaskFeature, config: dict[str, Any]) -> str:
     if record.area_ratio >= float(config["large_area_ratio"]):
         return "area_ratio>=large_area_ratio"
     return "area_ratio>small_area_ratio_preserved_as_thing"
 
 
-def _union_mask(records: list[MaskRecord]) -> np.ndarray:
+def _union_mask(records: list[MaskFeature]) -> np.ndarray:
     if not records:
         raise ValueError("cannot build a node from zero records")
     if len(records) == 1:
@@ -611,7 +824,12 @@ def _as_rgb_array(image_rgb: np.ndarray) -> np.ndarray:
 
 
 def _rgb_to_lab(image: np.ndarray) -> np.ndarray:
-    return np.asarray(Image.fromarray(image).convert("LAB"), dtype=np.float32)
+    try:
+        import cv2  # noqa: WPS433
+
+        return cv2.cvtColor(image, cv2.COLOR_RGB2LAB).astype(np.float32)
+    except Exception:  # noqa: BLE001
+        return np.asarray(Image.fromarray(image).convert("LAB"), dtype=np.float32)
 
 
 def _bbox(mask: np.ndarray) -> list[int]:
@@ -650,7 +868,25 @@ def _distance(left: list[float], right: list[float]) -> float:
     return float(np.linalg.norm(np.asarray(left, dtype=np.float64) - np.asarray(right, dtype=np.float64)))
 
 
-def _color_distance(left: MaskRecord, right: MaskRecord, *, use_lab_color: bool) -> float:
+def _weighted_mean(values: list[list[float]], weights: list[int]) -> list[float]:
+    if not values:
+        return [0.0, 0.0, 0.0]
+    values_array = np.asarray(values, dtype=np.float64)
+    weights_array = np.asarray(weights, dtype=np.float64)
+    if float(weights_array.sum()) == 0.0:
+        return [float(value) for value in values_array.mean(axis=0)]
+    return [float(value) for value in np.average(values_array, axis=0, weights=weights_array)]
+
+
+def _weighted_optional_mean(values: list[list[float] | None], weights: list[int]) -> list[float] | None:
+    present = [(value, weight) for value, weight in zip(values, weights, strict=True) if value is not None]
+    if not present:
+        return None
+    present_values, present_weights = zip(*present, strict=True)
+    return _weighted_mean(list(present_values), list(present_weights))
+
+
+def _color_distance(left: MaskFeature, right: MaskFeature, *, use_lab_color: bool) -> float:
     if use_lab_color and left.mean_lab is not None and right.mean_lab is not None:
         return _distance(left.mean_lab, right.mean_lab)
     return _distance(left.mean_rgb, right.mean_rgb)
@@ -662,7 +898,7 @@ def _bbox_gap(left: list[int], right: list[int]) -> float:
     return float((horizontal_gap**2 + vertical_gap**2) ** 0.5)
 
 
-def _spatial_dispersion(records: list[MaskRecord]) -> float:
+def _spatial_dispersion(records: list[MaskFeature]) -> float:
     if len(records) <= 1:
         return 0.0
     centroids = np.asarray([record.centroid for record in records], dtype=np.float64)
@@ -670,7 +906,7 @@ def _spatial_dispersion(records: list[MaskRecord]) -> float:
     return float(np.sqrt(((centroids - center) ** 2).sum(axis=1).mean()))
 
 
-def _spatial_dispersion_ratio(records: list[MaskRecord], *, image_shape: tuple[int, int]) -> float:
+def _spatial_dispersion_ratio(records: list[MaskFeature], *, image_shape: tuple[int, int]) -> float:
     height, width = image_shape
     diagonal = float((height**2 + width**2) ** 0.5)
     if diagonal == 0:

@@ -15,9 +15,17 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from relation.grounding_mask_cluster import (  # noqa: E402
+    MaskFeature,
+    bbox_gap,
+    build_small_mask_adjacency,
+    cluster_masks_to_components,
     cluster_grounding_masks,
+    color_distance,
+    compute_mask_features,
+    connected_components,
     raw_masks_from_label_image,
     resolve_cluster_config,
+    summarize_components,
 )
 from relation.run_relation_probe import run_probe  # noqa: E402
 
@@ -30,6 +38,31 @@ def box_mask(box: tuple[int, int, int, int], *, shape: tuple[int, int] = (100, 1
 
 
 class GroundingMaskClusterTests(unittest.TestCase):
+    def test_public_api_computes_features_clusters_and_summarizes(self) -> None:
+        image = np.full((100, 100, 3), 240, dtype=np.uint8)
+        raw_masks = [
+            {"mask_id": "large", "mask": box_mask((5, 5, 25, 25)), "score": 0.9},
+            {"mask_id": "chip_a", "mask": box_mask((50, 50, 55, 55)), "score": 0.8},
+            {"mask_id": "chip_b", "mask": box_mask((58, 50, 63, 55)), "score": 0.7},
+            {"mask_id": "chip_c", "mask": box_mask((66, 50, 71, 55)), "score": 0.6},
+        ]
+
+        features = compute_mask_features(image, raw_masks, {"use_lab_color": False})
+        self.assertTrue(all(isinstance(feature, MaskFeature) for feature in features))
+        small_features = [feature for feature in features if feature.mask_id != "large"]
+        adjacency = build_small_mask_adjacency(small_features, image.shape[:2])
+        self.assertEqual(connected_components(adjacency), [[0, 1, 2]])
+        self.assertEqual(bbox_gap(small_features[0].bbox, small_features[1].bbox), 3.0)
+        self.assertEqual(color_distance(small_features[0], small_features[1], use_lab=False), 0.0)
+
+        nodes = cluster_masks_to_components(image, raw_masks, config={"use_lab_color": False})
+        summary = summarize_components(nodes)
+
+        self.assertEqual(summary["num_nodes"], 2)
+        self.assertEqual(summary["num_thing"], 1)
+        self.assertEqual(summary["num_stuff_cluster"], 1)
+        self.assertEqual(summary["num_raw_masks_used"], 4)
+
     def test_clusters_nearby_small_masks_into_stuff_node(self) -> None:
         image = np.full((100, 100, 3), 240, dtype=np.uint8)
         raw_masks = [

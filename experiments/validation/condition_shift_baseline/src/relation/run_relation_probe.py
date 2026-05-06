@@ -22,7 +22,7 @@ from relation.geometry import (  # noqa: E402
     relation_score_bundle,
     resolve_position_shift_transform,
 )
-from relation.grounding_mask_cluster import cluster_grounding_masks, raw_masks_from_label_image  # noqa: E402
+from relation.grounding_mask_cluster import cluster_masks_to_components, raw_masks_from_label_image  # noqa: E402
 from relation.sam_lad_components import SamLadComponentConfig, SamLadComponentModel  # noqa: E402
 
 
@@ -252,7 +252,7 @@ def build_component_extractor(
                 raise FileNotFoundError(f"grounding mask not found: {mask_path}")
             with Image.open(mask_path) as mask_image:
                 raw_masks = raw_masks_from_label_image(mask_image)
-            nodes = cluster_grounding_masks(
+            nodes = cluster_masks_to_components(
                 np.asarray(image.convert("RGB")),
                 raw_masks,
                 config=grounding_cluster_config,
