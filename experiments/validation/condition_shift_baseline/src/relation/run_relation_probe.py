@@ -20,6 +20,7 @@ from relation.geometry import (  # noqa: E402
     relation_score_bundle,
     resolve_position_shift_transform,
 )
+from relation.sam_lad_components import SamLadComponentConfig, SamLadComponentModel  # noqa: E402
 
 
 def find_repo_root(start: Path) -> Path:
@@ -45,6 +46,13 @@ def run_probe(
     limit: int,
     output_path: Path,
     max_components: int,
+    component_model: str = "proxy",
+    sam_checkpoint: Path | None = None,
+    sam_root: Path | None = None,
+    sam_device: str = "auto",
+    sam_min_area_ratio: float = 0.0005,
+    sam_small_area_ratio: float = 0.006,
+    sam_max_area_ratio: float = 0.85,
 ) -> dict[str, Any]:
     entries = [
         entry
@@ -54,18 +62,35 @@ def run_probe(
         and entry.get("severity") == severity
     ][:limit]
 
+    extractor = build_component_extractor(
+        repo_root=repo_root,
+        component_model=component_model,
+        max_components=max_components,
+        sam_checkpoint=sam_checkpoint,
+        sam_root=sam_root,
+        sam_device=sam_device,
+        sam_min_area_ratio=sam_min_area_ratio,
+        sam_small_area_ratio=sam_small_area_ratio,
+        sam_max_area_ratio=sam_max_area_ratio,
+    )
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for entry in entries:
         source_path = resolve_source_path(entry, repo_root)
         image = Image.open(source_path).convert("RGB")
-        components = extract_proxy_components(image, max_components=max_components)
+        extraction = extractor(image)
+        components = extraction["components"]
         if len(components) < 2:
             skipped.append(
                 {
                     "source_id": entry.get("source_id"),
-                    "reason": "fewer_than_two_proxy_components",
+                    "reason": "fewer_than_two_components",
+                    "component_model": component_model,
+                    "component_source": extraction["component_source"],
                     "component_count": len(components),
+                    "raw_mask_count": extraction.get("raw_mask_count", 0),
+                    "merged_small_count": extraction.get("merged_small_count", 0),
+                    "component_note": extraction.get("component_note", "-"),
                 }
             )
             continue
@@ -86,7 +111,13 @@ def run_probe(
             {
                 "source_id": entry.get("source_id"),
                 "source_path": str(source_path),
+                "component_model": component_model,
+                "component_source": extraction["component_source"],
                 "component_count": len(components),
+                "raw_mask_count": extraction.get("raw_mask_count", 0),
+                "merged_small_count": extraction.get("merged_small_count", 0),
+                "component_note": extraction.get("component_note", "-"),
+                "component_sources": ",".join(sorted({component.source for component in components})),
                 "placement": transform.placement,
                 "scale": transform.scale,
                 "offset_x": transform.offset[0],
@@ -102,6 +133,7 @@ def run_probe(
     summary = {
         "category": category,
         "severity": severity,
+        "component_model": component_model,
         "manifest_path": str(manifest_path),
         "requested_limit": limit,
         "evaluated_count": len(rows),
@@ -113,6 +145,55 @@ def run_probe(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
+
+
+def build_component_extractor(
+    *,
+    repo_root: Path,
+    component_model: str,
+    max_components: int,
+    sam_checkpoint: Path | None,
+    sam_root: Path | None,
+    sam_device: str,
+    sam_min_area_ratio: float,
+    sam_small_area_ratio: float,
+    sam_max_area_ratio: float,
+):
+    if component_model == "proxy":
+        return lambda image: {
+            "components": extract_proxy_components(image, max_components=max_components),
+            "component_source": "proxy",
+            "raw_mask_count": 0,
+            "merged_small_count": 0,
+            "component_note": "-",
+        }
+    if component_model != "sam_lad":
+        raise ValueError(f"Unsupported component_model={component_model}")
+    config = SamLadComponentConfig(
+        max_components=max_components,
+        min_area_ratio=sam_min_area_ratio,
+        small_area_ratio=sam_small_area_ratio,
+        max_area_ratio=sam_max_area_ratio,
+    )
+    model = SamLadComponentModel.from_repo(
+        repo_root=repo_root,
+        checkpoint_path=sam_checkpoint,
+        sam_root=sam_root,
+        device=sam_device,
+        config=config,
+    )
+
+    def extract_with_sam_lad(image):
+        result = model.extract(image)
+        return {
+            "components": result.components,
+            "component_source": result.component_source,
+            "raw_mask_count": result.raw_mask_count,
+            "merged_small_count": result.merged_small_count,
+            "component_note": result.note,
+        }
+
+    return extract_with_sam_lad
 
 
 def _metric_medians(rows: list[dict[str, Any]]) -> dict[str, float | None]:
@@ -132,6 +213,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--severity", default="high", choices=["low", "medium", "high"])
     parser.add_argument("--limit", type=int, default=30)
     parser.add_argument("--max-components", type=int, default=8)
+    parser.add_argument("--component-model", choices=["proxy", "sam_lad"], default="proxy")
+    parser.add_argument("--sam-checkpoint", type=Path)
+    parser.add_argument("--sam-root", type=Path)
+    parser.add_argument("--sam-device", default="auto")
+    parser.add_argument("--sam-min-area-ratio", type=float, default=0.0005)
+    parser.add_argument("--sam-small-area-ratio", type=float, default=0.006)
+    parser.add_argument("--sam-max-area-ratio", type=float, default=0.85)
     parser.add_argument(
         "--output",
         type=Path,
@@ -153,6 +241,13 @@ def main() -> None:
         limit=args.limit,
         output_path=output_path,
         max_components=args.max_components,
+        component_model=args.component_model,
+        sam_checkpoint=args.sam_checkpoint,
+        sam_root=args.sam_root,
+        sam_device=args.sam_device,
+        sam_min_area_ratio=args.sam_min_area_ratio,
+        sam_small_area_ratio=args.sam_small_area_ratio,
+        sam_max_area_ratio=args.sam_max_area_ratio,
     )
     print(json.dumps({k: v for k, v in summary.items() if k not in {"rows", "skipped"}}, indent=2))
     print(f"output={output_path}")

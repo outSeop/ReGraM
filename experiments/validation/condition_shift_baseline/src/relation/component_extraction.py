@@ -12,6 +12,7 @@ class Component:
     centroid: tuple[float, float]
     bbox: tuple[int, int, int, int]
     area: int
+    source: str = "proxy"
 
 
 def extract_proxy_components(
@@ -68,9 +69,23 @@ def _connected_components(mask: np.ndarray) -> list[Component]:
                     centroid=(float(xs.mean()), float(ys.mean())),
                     bbox=(int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1),
                     area=len(pixels),
+                    source="proxy",
                 )
             )
     return components
+
+
+def component_from_mask(mask: np.ndarray, *, source: str) -> Component | None:
+    binary = np.asarray(mask, dtype=bool)
+    if binary.ndim != 2 or not binary.any():
+        return None
+    ys, xs = np.nonzero(binary)
+    return Component(
+        centroid=(float(xs.mean()), float(ys.mean())),
+        bbox=(int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1),
+        area=int(binary.sum()),
+        source=source,
+    )
 
 
 def _flood_fill(mask: np.ndarray, seen: np.ndarray, start_x: int, start_y: int) -> list[tuple[int, int]]:
