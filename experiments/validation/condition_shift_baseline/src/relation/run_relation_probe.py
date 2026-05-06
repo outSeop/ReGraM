@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -53,6 +54,9 @@ def run_probe(
     sam_min_area_ratio: float = 0.0005,
     sam_small_area_ratio: float = 0.006,
     sam_max_area_ratio: float = 0.85,
+    sam_points_per_side: int = 32,
+    sam_crop_n_layers: int = 1,
+    progress_every: int = 1,
 ) -> dict[str, Any]:
     entries = [
         entry
@@ -72,14 +76,32 @@ def run_probe(
         sam_min_area_ratio=sam_min_area_ratio,
         sam_small_area_ratio=sam_small_area_ratio,
         sam_max_area_ratio=sam_max_area_ratio,
+        sam_points_per_side=sam_points_per_side,
+        sam_crop_n_layers=sam_crop_n_layers,
     )
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    for entry in entries:
+    run_started_at = time.perf_counter()
+    for entry_index, entry in enumerate(entries, start=1):
+        item_started_at = time.perf_counter()
         source_path = resolve_source_path(entry, repo_root)
         image = Image.open(source_path).convert("RGB")
         extraction = extractor(image)
         components = extraction["components"]
+        elapsed = time.perf_counter() - item_started_at
+        if progress_every > 0 and (entry_index == 1 or entry_index % progress_every == 0 or entry_index == len(entries)):
+            print(
+                "relation probe progress: "
+                f"{entry_index}/{len(entries)} "
+                f"component_model={component_model} "
+                f"source_id={entry.get('source_id')} "
+                f"raw_masks={extraction.get('raw_mask_count', 0)} "
+                f"components={len(components)} "
+                f"merged_small={extraction.get('merged_small_count', 0)} "
+                f"item_sec={elapsed:.1f} total_sec={time.perf_counter() - run_started_at:.1f} "
+                f"note={extraction.get('component_note', '-')}",
+                flush=True,
+            )
         if len(components) < 2:
             skipped.append(
                 {
@@ -158,6 +180,8 @@ def build_component_extractor(
     sam_min_area_ratio: float,
     sam_small_area_ratio: float,
     sam_max_area_ratio: float,
+    sam_points_per_side: int,
+    sam_crop_n_layers: int,
 ):
     if component_model == "proxy":
         return lambda image: {
@@ -174,6 +198,8 @@ def build_component_extractor(
         min_area_ratio=sam_min_area_ratio,
         small_area_ratio=sam_small_area_ratio,
         max_area_ratio=sam_max_area_ratio,
+        points_per_side=sam_points_per_side,
+        crop_n_layers=sam_crop_n_layers,
     )
     model = SamLadComponentModel.from_repo(
         repo_root=repo_root,
@@ -220,6 +246,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam-min-area-ratio", type=float, default=0.0005)
     parser.add_argument("--sam-small-area-ratio", type=float, default=0.006)
     parser.add_argument("--sam-max-area-ratio", type=float, default=0.85)
+    parser.add_argument("--sam-points-per-side", type=int, default=32)
+    parser.add_argument("--sam-crop-n-layers", type=int, default=1)
+    parser.add_argument("--progress-every", type=int, default=1)
     parser.add_argument(
         "--output",
         type=Path,
@@ -248,6 +277,9 @@ def main() -> None:
         sam_min_area_ratio=args.sam_min_area_ratio,
         sam_small_area_ratio=args.sam_small_area_ratio,
         sam_max_area_ratio=args.sam_max_area_ratio,
+        sam_points_per_side=args.sam_points_per_side,
+        sam_crop_n_layers=args.sam_crop_n_layers,
+        progress_every=args.progress_every,
     )
     print(json.dumps({k: v for k, v in summary.items() if k not in {"rows", "skipped"}}, indent=2))
     print(f"output={output_path}")

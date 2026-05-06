@@ -23,6 +23,7 @@ class SamLadComponentConfig:
     pred_iou_thresh: float = 0.88
     stability_score_thresh: float = 0.96
     box_nms_thresh: float = 0.7
+    crop_n_layers: int = 1
     min_mask_region_area: int = 64
 
 
@@ -97,7 +98,7 @@ class SamLadComponentModel:
             stability_score_thresh=resolved_config.stability_score_thresh,
             stability_score_offset=1.0,
             box_nms_thresh=resolved_config.box_nms_thresh,
-            crop_n_layers=1,
+            crop_n_layers=resolved_config.crop_n_layers,
             crop_nms_thresh=0.7,
             crop_overlap_ratio=512 / 1500,
             crop_n_points_downscale_factor=1,
