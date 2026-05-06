@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import importlib.metadata
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -110,7 +111,20 @@ class SamLadComponentModel:
 
     def extract(self, image: Image.Image) -> SamLadComponentResult:
         rgb = np.asarray(image.convert("RGB"))
+        started_at = time.perf_counter()
+        print(
+            "sam_lad mask generation start: "
+            f"image_size={image.size[0]}x{image.size[1]} "
+            f"points_per_side={self.config.points_per_side} "
+            f"crop_n_layers={self.config.crop_n_layers}",
+            flush=True,
+        )
         raw_masks = self.mask_generator.generate(rgb)
+        print(
+            "sam_lad mask generation done: "
+            f"raw_masks={len(raw_masks)} elapsed_sec={time.perf_counter() - started_at:.1f}",
+            flush=True,
+        )
         return extract_sam_lad_components_from_masks(
             raw_masks,
             image_size=image.size,

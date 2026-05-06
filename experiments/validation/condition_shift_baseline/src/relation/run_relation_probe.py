@@ -66,6 +66,17 @@ def run_probe(
         and entry.get("severity") == severity
     ][:limit]
 
+    if progress_every > 0:
+        print(
+            "relation probe start: "
+            f"component_model={component_model} "
+            f"category={category} severity={severity} limit={limit} "
+            f"matched_entries={len(entries)} "
+            f"sam_points_per_side={sam_points_per_side} "
+            f"sam_crop_n_layers={sam_crop_n_layers}",
+            flush=True,
+        )
+        print("relation probe setup: building component extractor", flush=True)
     extractor = build_component_extractor(
         repo_root=repo_root,
         component_model=component_model,
@@ -79,12 +90,22 @@ def run_probe(
         sam_points_per_side=sam_points_per_side,
         sam_crop_n_layers=sam_crop_n_layers,
     )
+    if progress_every > 0:
+        print("relation probe setup: component extractor ready", flush=True)
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     run_started_at = time.perf_counter()
     for entry_index, entry in enumerate(entries, start=1):
         item_started_at = time.perf_counter()
         source_path = resolve_source_path(entry, repo_root)
+        if progress_every > 0 and (entry_index == 1 or entry_index % progress_every == 0 or entry_index == len(entries)):
+            print(
+                "relation probe item start: "
+                f"{entry_index}/{len(entries)} "
+                f"source_id={entry.get('source_id')} "
+                f"path={source_path}",
+                flush=True,
+            )
         image = Image.open(source_path).convert("RGB")
         extraction = extractor(image)
         components = extraction["components"]
