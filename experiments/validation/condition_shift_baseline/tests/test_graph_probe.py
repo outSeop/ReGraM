@@ -13,6 +13,11 @@ if str(SRC_DIR) not in sys.path:
 
 from graph_probe.component_io import component_quality_row, load_component_nodes  # noqa: E402
 from graph_probe.component_matching import match_components  # noqa: E402
+from graph_probe.batch_compare import (  # noqa: E402
+    compare_summary_conditions,
+    row_identity,
+    summarize_condition_scores,
+)
 from graph_probe.graph_consistency import graph_consistency_score  # noqa: E402
 from graph_probe.graph_features import edge_feature  # noqa: E402
 from graph_probe.run_logical_probe import run_logical_probe  # noqa: E402
@@ -170,6 +175,57 @@ class GraphProbeTests(unittest.TestCase):
             self.assertTrue((tmp_path / "logical.csv").exists())
             self.assertEqual(load_component_nodes(reference, row_index=0), ref_nodes)
 
+    def test_batch_compare_matches_base_image_id_and_writes_condition_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            reference = tmp_path / "clean.json"
+            shifted = tmp_path / "shifted.json"
+            logical = tmp_path / "logical.json"
+            ref_nodes = [
+                node("a", (0, 0, 10, 10)),
+                node("b", (60, 0, 70, 10)),
+            ]
+            shifted_nodes = [
+                node("a_shift", (1, 0, 11, 10)),
+                node("b_shift", (61, 0, 71, 10)),
+            ]
+            logical_nodes = [
+                node("a_logical", (0, 0, 10, 10)),
+                node("b_moved", (20, 40, 30, 50)),
+            ]
+            reference.write_text(
+                json.dumps({"rows": [_row_with_base("000.png", "clean_000.png", ref_nodes)]}),
+                encoding="utf-8",
+            )
+            shifted.write_text(
+                json.dumps({"rows": [_row_with_base("000.png", "brightness_000.png", shifted_nodes)]}),
+                encoding="utf-8",
+            )
+            logical.write_text(
+                json.dumps({"rows": [_row_with_base("000.png", "logical_000.png", logical_nodes)]}),
+                encoding="utf-8",
+            )
+
+            score_df = compare_summary_conditions(
+                reference_summary_path=reference,
+                query_summary_paths={
+                    "brightness_high": shifted,
+                    "logical_anomaly": logical,
+                },
+                category="breakfast_box",
+                output_csv=tmp_path / "scores.csv",
+            )
+            summary_df = summarize_condition_scores(score_df, output_csv=tmp_path / "summary.csv")
+
+            self.assertEqual(len(score_df), 2)
+            self.assertEqual(set(score_df["condition"]), {"brightness_high", "logical_anomaly"})
+            self.assertEqual(set(score_df["image_id"]), {"000.png"})
+            self.assertEqual(row_identity({"source_path": "/tmp/fallback.png"}), "fallback.png")
+            self.assertTrue((tmp_path / "scores.csv").exists())
+            self.assertTrue((tmp_path / "summary.csv").exists())
+            self.assertEqual(set(summary_df["condition"]), {"brightness_high", "logical_anomaly"})
+            self.assertIn("S_edge_mean", summary_df.columns)
+
 
 def _row(source_id: str, nodes: list[dict]) -> dict:
     return {
@@ -179,6 +235,12 @@ def _row(source_id: str, nodes: list[dict]) -> dict:
         "raw_mask_count": len({mask_id for node_item in nodes for mask_id in node_item["mask_ids"]}),
         "component_nodes": nodes,
     }
+
+
+def _row_with_base(base_image_id: str, source_id: str, nodes: list[dict]) -> dict:
+    row = _row(source_id, nodes)
+    row["base_image_id"] = base_image_id
+    return row
 
 
 if __name__ == "__main__":
