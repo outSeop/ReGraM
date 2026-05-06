@@ -8,6 +8,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+import numpy as np
 from PIL import Image
 
 _SRC_ROOT = Path(__file__).resolve().parents[1]
@@ -15,12 +16,13 @@ if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
 from data.augmentation_runtime import apply_augmentation, load_manifest  # noqa: E402
-from relation.component_extraction import component_centroids, extract_proxy_components  # noqa: E402
+from relation.component_extraction import Component, component_centroids, extract_proxy_components  # noqa: E402
 from relation.geometry import (  # noqa: E402
     apply_position_transform,
     relation_score_bundle,
     resolve_position_shift_transform,
 )
+from relation.grounding_mask_cluster import cluster_grounding_masks, raw_masks_from_label_image  # noqa: E402
 from relation.sam_lad_components import SamLadComponentConfig, SamLadComponentModel  # noqa: E402
 
 
@@ -56,6 +58,9 @@ def run_probe(
     sam_max_area_ratio: float = 0.85,
     sam_points_per_side: int = 32,
     sam_crop_n_layers: int = 1,
+    grounding_mask_root: Path | None = None,
+    grounding_mask_data_root: Path | None = None,
+    grounding_cluster_config: dict[str, Any] | None = None,
     progress_every: int = 1,
 ) -> dict[str, Any]:
     entries = [
@@ -89,6 +94,10 @@ def run_probe(
         sam_max_area_ratio=sam_max_area_ratio,
         sam_points_per_side=sam_points_per_side,
         sam_crop_n_layers=sam_crop_n_layers,
+        grounding_mask_root=grounding_mask_root,
+        grounding_mask_data_root=grounding_mask_data_root,
+        grounding_cluster_config=grounding_cluster_config,
+        category=category,
     )
     if progress_every > 0:
         print("relation probe setup: component extractor ready", flush=True)
@@ -107,7 +116,7 @@ def run_probe(
                 flush=True,
             )
         image = Image.open(source_path).convert("RGB")
-        extraction = extractor(image)
+        extraction = extractor(image, entry=entry, source_path=source_path)
         components = extraction["components"]
         elapsed = time.perf_counter() - item_started_at
         if progress_every > 0 and (entry_index == 1 or entry_index % progress_every == 0 or entry_index == len(entries)):
@@ -133,7 +142,11 @@ def run_probe(
                     "component_count": len(components),
                     "raw_mask_count": extraction.get("raw_mask_count", 0),
                     "merged_small_count": extraction.get("merged_small_count", 0),
+                    "thing_count": extraction.get("thing_count", 0),
+                    "stuff_cluster_count": extraction.get("stuff_cluster_count", 0),
+                    "small_isolated_count": extraction.get("small_isolated_count", 0),
                     "component_note": extraction.get("component_note", "-"),
+                    "component_nodes": extraction.get("component_nodes", []),
                 }
             )
             continue
@@ -159,8 +172,12 @@ def run_probe(
                 "component_count": len(components),
                 "raw_mask_count": extraction.get("raw_mask_count", 0),
                 "merged_small_count": extraction.get("merged_small_count", 0),
+                "thing_count": extraction.get("thing_count", 0),
+                "stuff_cluster_count": extraction.get("stuff_cluster_count", 0),
+                "small_isolated_count": extraction.get("small_isolated_count", 0),
                 "component_note": extraction.get("component_note", "-"),
                 "component_sources": ",".join(sorted({component.source for component in components})),
+                "component_nodes": extraction.get("component_nodes", []),
                 "placement": transform.placement,
                 "scale": transform.scale,
                 "offset_x": transform.offset[0],
@@ -203,15 +220,68 @@ def build_component_extractor(
     sam_max_area_ratio: float,
     sam_points_per_side: int,
     sam_crop_n_layers: int,
+    grounding_mask_root: Path | None,
+    grounding_mask_data_root: Path | None,
+    grounding_cluster_config: dict[str, Any] | None,
+    category: str,
 ):
     if component_model == "proxy":
-        return lambda image: {
+        return lambda image, **_: {
             "components": extract_proxy_components(image, max_components=max_components),
             "component_source": "proxy",
             "raw_mask_count": 0,
             "merged_small_count": 0,
+            "thing_count": 0,
+            "stuff_cluster_count": 0,
+            "small_isolated_count": 0,
+            "component_nodes": [],
             "component_note": "-",
         }
+    if component_model == "grounding_mask_cluster":
+        mask_root = grounding_mask_root or repo_root / "external" / "UniVAD" / "masks" / "mvtec_loco_caption"
+        mask_data_root = grounding_mask_data_root or repo_root / "data" / "row" / "mvtec_loco_anomaly_detection"
+
+        def extract_with_grounding_mask_cluster(image, *, source_path: Path, **_):
+            mask_path = expected_grounding_mask_path_for_image(
+                source_path,
+                data_root=mask_data_root,
+                mask_root=mask_root,
+                category=category,
+            )
+            if not mask_path.exists():
+                raise FileNotFoundError(f"grounding mask not found: {mask_path}")
+            with Image.open(mask_path) as mask_image:
+                raw_masks = raw_masks_from_label_image(mask_image)
+            nodes = cluster_grounding_masks(
+                np.asarray(image.convert("RGB")),
+                raw_masks,
+                config=grounding_cluster_config,
+                category=category,
+            )
+            components = [_component_from_node(node) for node in nodes[:max_components]]
+            node_type_counts = _node_type_counts(nodes)
+            return {
+                "components": components,
+                "component_source": "grounding_mask_cluster",
+                "raw_mask_count": len(raw_masks),
+                "merged_small_count": sum(
+                    int(node["num_members"])
+                    for node in nodes
+                    if node["node_type"] == "stuff_cluster"
+                ),
+                "thing_count": node_type_counts.get("thing", 0),
+                "stuff_cluster_count": node_type_counts.get("stuff_cluster", 0),
+                "small_isolated_count": node_type_counts.get("small_isolated", 0),
+                "component_nodes": nodes,
+                "component_note": (
+                    f"mask_path={mask_path}; "
+                    f"thing={node_type_counts.get('thing', 0)}; "
+                    f"stuff_cluster={node_type_counts.get('stuff_cluster', 0)}; "
+                    f"small_isolated={node_type_counts.get('small_isolated', 0)}"
+                ),
+            }
+
+        return extract_with_grounding_mask_cluster
     if component_model != "sam_lad":
         raise ValueError(f"Unsupported component_model={component_model}")
     config = SamLadComponentConfig(
@@ -230,17 +300,58 @@ def build_component_extractor(
         config=config,
     )
 
-    def extract_with_sam_lad(image):
+    def extract_with_sam_lad(image, **_):
         result = model.extract(image)
         return {
             "components": result.components,
             "component_source": result.component_source,
             "raw_mask_count": result.raw_mask_count,
             "merged_small_count": result.merged_small_count,
+            "thing_count": 0,
+            "stuff_cluster_count": 0,
+            "small_isolated_count": 0,
+            "component_nodes": [],
             "component_note": result.note,
         }
 
     return extract_with_sam_lad
+
+
+def expected_grounding_mask_path_for_image(
+    image_path: Path,
+    *,
+    data_root: Path,
+    mask_root: Path,
+    category: str,
+) -> Path:
+    try:
+        rel_path = image_path.relative_to(data_root / category)
+    except ValueError:
+        parts = list(image_path.parts)
+        if category not in parts:
+            raise
+        category_index = len(parts) - 1 - parts[::-1].index(category)
+        rel_path = Path(*parts[category_index + 1 :])
+    return mask_root / category / rel_path.with_suffix("") / "grounding_mask.png"
+
+
+def _component_from_node(node: dict[str, Any]) -> Component:
+    bbox = node["bbox"]
+    centroid = node["centroid"]
+    return Component(
+        centroid=(float(centroid[0]), float(centroid[1])),
+        bbox=(int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])),
+        area=int(node["area"]),
+        source=f"grounding_mask_{node['node_type']}",
+    )
+
+
+def _node_type_counts(nodes: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for node in nodes:
+        node_type = str(node["node_type"])
+        counts[node_type] = counts.get(node_type, 0) + 1
+    return counts
 
 
 def _metric_medians(rows: list[dict[str, Any]]) -> dict[str, float | None]:
@@ -260,7 +371,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--severity", default="high", choices=["low", "medium", "high"])
     parser.add_argument("--limit", type=int, default=30)
     parser.add_argument("--max-components", type=int, default=8)
-    parser.add_argument("--component-model", choices=["proxy", "sam_lad"], default="proxy")
+    parser.add_argument("--component-model", choices=["proxy", "sam_lad", "grounding_mask_cluster"], default="proxy")
     parser.add_argument("--sam-checkpoint", type=Path)
     parser.add_argument("--sam-root", type=Path)
     parser.add_argument("--sam-device", default="auto")
@@ -269,6 +380,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam-max-area-ratio", type=float, default=0.85)
     parser.add_argument("--sam-points-per-side", type=int, default=32)
     parser.add_argument("--sam-crop-n-layers", type=int, default=1)
+    parser.add_argument("--mask-root", type=Path)
+    parser.add_argument("--mask-data-root", type=Path)
+    parser.add_argument("--grounding-cluster-config", type=Path)
     parser.add_argument("--progress-every", type=int, default=1)
     parser.add_argument(
         "--output",
@@ -283,6 +397,7 @@ def main() -> None:
     repo_root = args.repo_root.resolve()
     manifest_path = args.manifest if args.manifest.is_absolute() else repo_root / args.manifest
     output_path = args.output if args.output.is_absolute() else repo_root / args.output
+    grounding_cluster_config = load_config_file(args.grounding_cluster_config)
     summary = run_probe(
         repo_root=repo_root,
         manifest_path=manifest_path,
@@ -300,10 +415,33 @@ def main() -> None:
         sam_max_area_ratio=args.sam_max_area_ratio,
         sam_points_per_side=args.sam_points_per_side,
         sam_crop_n_layers=args.sam_crop_n_layers,
+        grounding_mask_root=args.mask_root,
+        grounding_mask_data_root=args.mask_data_root,
+        grounding_cluster_config=grounding_cluster_config,
         progress_every=args.progress_every,
     )
     print(json.dumps({k: v for k, v in summary.items() if k not in {"rows", "skipped"}}, indent=2))
     print(f"output={output_path}")
+
+
+def load_config_file(config_path: Path | None) -> dict[str, Any] | None:
+    if config_path is None:
+        return None
+    text = config_path.read_text(encoding="utf-8")
+    if config_path.suffix.lower() == ".json":
+        return json.loads(text)
+    try:
+        import yaml  # noqa: WPS433
+    except ImportError as exc:
+        raise RuntimeError(
+            f"YAML config requested but PyYAML is not installed: {config_path}"
+        ) from exc
+    loaded = yaml.safe_load(text)
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"config must be a mapping: {config_path}")
+    return loaded
 
 
 if __name__ == "__main__":

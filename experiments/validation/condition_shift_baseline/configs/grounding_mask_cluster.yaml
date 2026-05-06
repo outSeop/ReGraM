@@ -1,0 +1,23 @@
+default:
+  large_area_ratio: 0.01
+  small_area_ratio: 0.003
+  min_mask_area: 20
+  min_cluster_members: 3
+  max_centroid_dist_ratio: 0.08
+  max_bbox_gap_ratio: 0.03
+  max_color_dist: 35.0
+  min_union_area_ratio: 0.005
+  max_spatial_dispersion_ratio: 0.12
+  use_lab_color: true
+
+categories:
+  breakfast_box:
+    min_cluster_members: 3
+    max_color_dist: 40.0
+  screw_bag:
+    min_cluster_members: 6
+    max_centroid_dist_ratio: 0.04
+    max_bbox_gap_ratio: 0.015
+  splicing_connectors:
+    min_cluster_members: 5
+    max_centroid_dist_ratio: 0.05
