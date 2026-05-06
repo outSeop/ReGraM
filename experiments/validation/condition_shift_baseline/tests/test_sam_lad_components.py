@@ -15,6 +15,7 @@ if str(SRC_DIR) not in sys.path:
 from relation.sam_lad_components import (  # noqa: E402
     SamLadComponentConfig,
     SamLadComponentModel,
+    ensure_numpy_1_for_torch,
     extract_sam_lad_components_from_masks,
 )
 
@@ -87,6 +88,13 @@ class SamLadComponentTests(unittest.TestCase):
 
         self.assertEqual(result.component_source, "sam_lad")
         self.assertEqual(len(result.components), 2)
+
+    def test_numpy_guard_blocks_numpy_2_runtime(self) -> None:
+        from unittest import mock
+
+        with mock.patch("relation.sam_lad_components.importlib.metadata.version", return_value="2.4.4"):
+            with self.assertRaisesRegex(RuntimeError, "numpy=2.4.4"):
+                ensure_numpy_1_for_torch()
 
 
 if __name__ == "__main__":

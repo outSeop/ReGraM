@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import importlib.metadata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,7 @@ class SamLadComponentModel:
         if str(segment_anything_parent) not in sys.path:
             sys.path.insert(0, str(segment_anything_parent))
 
+        ensure_numpy_1_for_torch()
         import torch  # noqa: WPS433
         from segment_anything import SamAutomaticMaskGenerator, sam_hq_model_registry  # noqa: WPS433
 
@@ -179,6 +181,20 @@ def extract_sam_lad_components_from_masks(
         merged_small_count=len(small_masks),
         component_source="sam_lad",
         note="; ".join(note_parts) if note_parts else "-",
+    )
+
+
+def ensure_numpy_1_for_torch() -> None:
+    try:
+        numpy_version = importlib.metadata.version("numpy")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    if numpy_version.split(".", maxsplit=1)[0] == "1":
+        return
+    raise RuntimeError(
+        "SAM-LAD component extraction needs a torch/SAM runtime compatible with NumPy 1.x. "
+        f"Current numpy={numpy_version}. In Colab, run the 05_sam_lad_relation_probe "
+        "runtime guard cell to install numpy==1.26.4, restart the runtime, then rerun."
     )
 
 
