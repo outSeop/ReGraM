@@ -67,6 +67,33 @@ class GroundingMaskClusterTests(unittest.TestCase):
             {"not_enough_cluster_members"},
         )
 
+    def test_can_absorb_nearby_singleton_into_existing_stuff_cluster(self) -> None:
+        image = np.full((100, 100, 3), 240, dtype=np.uint8)
+        raw_masks = [
+            {"mask_id": "chip_a", "mask": box_mask((50, 50, 55, 55))},
+            {"mask_id": "chip_b", "mask": box_mask((58, 50, 63, 55))},
+            {"mask_id": "chip_c", "mask": box_mask((66, 50, 71, 55))},
+            {"mask_id": "chip_outlier", "mask": box_mask((82, 53, 87, 58))},
+        ]
+
+        nodes = cluster_grounding_masks(
+            image,
+            raw_masks,
+            config={
+                "absorb_nearby_singletons": True,
+                "absorb_max_centroid_dist_ratio": 0.2,
+                "absorb_max_bbox_gap_ratio": 0.2,
+                "max_centroid_dist_ratio": 0.08,
+                "max_bbox_gap_ratio": 0.03,
+            },
+        )
+
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["node_type"], "stuff_cluster")
+        self.assertEqual(nodes[0]["num_members"], 4)
+        self.assertIn("chip_outlier", nodes[0]["mask_ids"])
+        self.assertEqual(nodes[0]["debug"]["cluster_conditions"]["absorbed_nearby_group_count"], 1)
+
     def test_same_label_can_cluster_even_when_color_differs(self) -> None:
         image = np.full((100, 100, 3), 255, dtype=np.uint8)
         masks = [
@@ -107,12 +134,18 @@ class GroundingMaskClusterTests(unittest.TestCase):
         config = resolve_cluster_config(
             {
                 "default": {"large_area_ratio": 0.02},
-                "categories": {"breakfast_box": {"large_area_ratio": 0.04}},
+                "categories": {
+                    "breakfast_box": {
+                        "large_area_ratio": 0.04,
+                        "absorb_nearby_singletons": True,
+                    }
+                },
             },
             category="breakfast_box",
         )
 
         self.assertEqual(config["large_area_ratio"], 0.04)
+        self.assertTrue(config["absorb_nearby_singletons"])
 
     def test_relation_probe_can_use_colored_grounding_mask(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

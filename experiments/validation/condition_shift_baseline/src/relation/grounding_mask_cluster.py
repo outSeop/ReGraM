@@ -11,6 +11,7 @@ from PIL import Image
 DEFAULT_CONFIG: dict[str, Any] = {
     "large_area_ratio": 0.01,
     "small_area_ratio": 0.003,
+    "cluster_candidate_area_ratio": None,
     "min_mask_area": 20,
     "min_cluster_members": 3,
     "max_centroid_dist_ratio": 0.08,
@@ -20,6 +21,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_spatial_dispersion_ratio": 0.12,
     "use_lab_color": True,
     "allow_mixed_labels_with_color": False,
+    "absorb_nearby_singletons": False,
+    "absorb_max_members": 2,
+    "absorb_max_area_ratio": None,
+    "absorb_max_centroid_dist_ratio": 0.12,
+    "absorb_max_bbox_gap_ratio": 0.05,
 }
 
 
@@ -60,6 +66,7 @@ def cluster_grounding_masks(
     height, width = image.shape[:2]
     image_area = int(height * width)
     lab_image = _rgb_to_lab(image) if resolved_config["use_lab_color"] else None
+    cluster_candidate_area_ratio = _cluster_candidate_area_ratio(resolved_config)
     records = _normalize_raw_masks(
         raw_masks,
         image=image,
@@ -71,7 +78,7 @@ def cluster_grounding_masks(
     thing_records: list[MaskRecord] = []
     small_records: list[MaskRecord] = []
     for record in records:
-        if record.area_ratio <= float(resolved_config["small_area_ratio"]):
+        if record.area_ratio <= cluster_candidate_area_ratio:
             small_records.append(record)
         else:
             thing_records.append(record)
@@ -95,6 +102,11 @@ def cluster_grounding_masks(
 
     cluster_groups = _cluster_small_records(
         small_records,
+        image_shape=(height, width),
+        config=resolved_config,
+    )
+    cluster_groups = _absorb_nearby_invalid_groups(
+        cluster_groups,
         image_shape=(height, width),
         config=resolved_config,
     )
@@ -137,6 +149,13 @@ def cluster_grounding_masks(
     for index, node in enumerate(nodes):
         node["node_id"] = f"node_{index:04d}"
     return nodes
+
+
+def _cluster_candidate_area_ratio(config: dict[str, Any]) -> float:
+    value = config.get("cluster_candidate_area_ratio")
+    if value is None:
+        return float(config["small_area_ratio"])
+    return float(value)
 
 
 def resolve_cluster_config(config: dict[str, Any] | None = None, *, category: str | None = None) -> dict[str, Any]:
@@ -310,6 +329,100 @@ def _cluster_small_records(
         ]
         groups.append((group, _cluster_debug(group, group_edges, image_shape=image_shape)))
     return groups
+
+
+def _absorb_nearby_invalid_groups(
+    groups: list[tuple[list[MaskRecord], dict[str, Any]]],
+    *,
+    image_shape: tuple[int, int],
+    config: dict[str, Any],
+) -> list[tuple[list[MaskRecord], dict[str, Any]]]:
+    if not bool(config.get("absorb_nearby_singletons", False)):
+        return groups
+    valid_groups: list[list[MaskRecord]] = []
+    absorbed_debug: list[list[dict[str, Any]]] = []
+    invalid_groups: list[tuple[list[MaskRecord], dict[str, Any]]] = []
+    image_area = int(image_shape[0] * image_shape[1])
+    for group, debug in groups:
+        if _is_valid_stuff_cluster(group, debug, image_area=image_area, config=config):
+            valid_groups.append(list(group))
+            absorbed_debug.append([])
+        else:
+            invalid_groups.append((group, debug))
+    if not valid_groups:
+        return groups
+
+    height, width = image_shape
+    diagonal = float((height**2 + width**2) ** 0.5)
+    max_centroid_dist = float(config["absorb_max_centroid_dist_ratio"]) * diagonal
+    max_bbox_gap = float(config["absorb_max_bbox_gap_ratio"]) * max(height, width)
+    absorb_max_area_ratio = config.get("absorb_max_area_ratio")
+    if absorb_max_area_ratio is None:
+        absorb_max_area_ratio = _cluster_candidate_area_ratio(config)
+    remaining_invalid: list[tuple[list[MaskRecord], dict[str, Any]]] = []
+
+    for group, debug in invalid_groups:
+        if len(group) > int(config["absorb_max_members"]):
+            remaining_invalid.append((group, debug))
+            continue
+        if any(record.area_ratio > float(absorb_max_area_ratio) for record in group):
+            remaining_invalid.append((group, debug))
+            continue
+        best_index = None
+        best_relation = None
+        for valid_index, valid_group in enumerate(valid_groups):
+            relation = _group_relation(group, valid_group)
+            if relation["centroid_dist"] > max_centroid_dist or relation["bbox_gap"] > max_bbox_gap:
+                continue
+            if best_relation is None or (
+                relation["bbox_gap"],
+                relation["centroid_dist"],
+            ) < (
+                best_relation["bbox_gap"],
+                best_relation["centroid_dist"],
+            ):
+                best_index = valid_index
+                best_relation = relation
+        if best_index is None or best_relation is None:
+            remaining_invalid.append((group, debug))
+            continue
+        valid_groups[best_index].extend(group)
+        absorbed_debug[best_index].append(
+            {
+                "absorbed_mask_ids": [_jsonable(record.mask_id) for record in group],
+                "absorbed_reason": _invalid_cluster_reason(debug, config=config),
+                "centroid_dist": float(best_relation["centroid_dist"]),
+                "bbox_gap": float(best_relation["bbox_gap"]),
+            }
+        )
+
+    absorbed_groups: list[tuple[list[MaskRecord], dict[str, Any]]] = []
+    for group, absorption_events in zip(valid_groups, absorbed_debug, strict=True):
+        debug = _cluster_debug(group, [], image_shape=image_shape)
+        if absorption_events:
+            debug["absorbed_nearby_groups"] = absorption_events
+            debug["absorbed_nearby_group_count"] = len(absorption_events)
+            debug["absorbed_nearby_member_count"] = sum(
+                len(event["absorbed_mask_ids"]) for event in absorption_events
+            )
+        absorbed_groups.append((group, debug))
+    return absorbed_groups + remaining_invalid
+
+
+def _group_relation(left_group: list[MaskRecord], right_group: list[MaskRecord]) -> dict[str, float]:
+    best_centroid_dist = float("inf")
+    best_bbox_gap = float("inf")
+    for left in left_group:
+        for right in right_group:
+            centroid_dist = _distance(left.centroid, right.centroid)
+            bbox_gap = _bbox_gap(left.bbox, right.bbox)
+            if (bbox_gap, centroid_dist) < (best_bbox_gap, best_centroid_dist):
+                best_bbox_gap = bbox_gap
+                best_centroid_dist = centroid_dist
+    return {
+        "centroid_dist": float(best_centroid_dist),
+        "bbox_gap": float(best_bbox_gap),
+    }
 
 
 def _pair_relation(

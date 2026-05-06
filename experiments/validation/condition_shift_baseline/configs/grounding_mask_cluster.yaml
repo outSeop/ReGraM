@@ -1,6 +1,7 @@
 default:
   large_area_ratio: 0.01
   small_area_ratio: 0.003
+  cluster_candidate_area_ratio: null
   min_mask_area: 20
   min_cluster_members: 3
   max_centroid_dist_ratio: 0.08
@@ -9,15 +10,37 @@ default:
   min_union_area_ratio: 0.005
   max_spatial_dispersion_ratio: 0.12
   use_lab_color: true
+  allow_mixed_labels_with_color: false
+  absorb_nearby_singletons: false
+  absorb_max_members: 2
+  absorb_max_area_ratio: null
+  absorb_max_centroid_dist_ratio: 0.12
+  absorb_max_bbox_gap_ratio: 0.05
 
 categories:
   breakfast_box:
+    small_area_ratio: 0.006
+    cluster_candidate_area_ratio: 0.02
     min_cluster_members: 3
-    max_color_dist: 40.0
+    max_centroid_dist_ratio: 0.12
+    max_bbox_gap_ratio: 0.05
+    max_color_dist: 999.0
+    min_union_area_ratio: 0.004
+    max_spatial_dispersion_ratio: 0.20
+    use_lab_color: false
+    absorb_nearby_singletons: true
+    absorb_max_members: 2
+    absorb_max_area_ratio: 0.02
+    absorb_max_centroid_dist_ratio: 0.16
+    absorb_max_bbox_gap_ratio: 0.08
   screw_bag:
+    cluster_candidate_area_ratio: 0.003
     min_cluster_members: 6
     max_centroid_dist_ratio: 0.04
     max_bbox_gap_ratio: 0.015
+    absorb_nearby_singletons: false
   splicing_connectors:
+    cluster_candidate_area_ratio: 0.004
     min_cluster_members: 5
     max_centroid_dist_ratio: 0.05
+    absorb_nearby_singletons: false
