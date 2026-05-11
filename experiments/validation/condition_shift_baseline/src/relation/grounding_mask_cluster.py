@@ -19,6 +19,7 @@ from PIL import Image
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "large_area_ratio": 0.01,
+    "max_mask_area_ratio": None,
     "small_area_ratio": 0.003,
     "cluster_candidate_area_ratio": None,
     "min_mask_area": 20,
@@ -236,6 +237,7 @@ def compute_mask_features(
         lab_image=lab_image,
         image_area=image_area,
         min_mask_area=int(resolved_config["min_mask_area"]),
+        max_mask_area_ratio=resolved_config.get("max_mask_area_ratio"),
     )
 
 
@@ -369,6 +371,7 @@ def _normalize_raw_masks(
     lab_image: np.ndarray | None,
     image_area: int,
     min_mask_area: int,
+    max_mask_area_ratio: float | None,
 ) -> list[MaskFeature]:
     records: list[MaskFeature] = []
     for index, raw_mask in enumerate(raw_masks):
@@ -381,12 +384,15 @@ def _normalize_raw_masks(
         area = int(mask.sum())
         if area < min_mask_area:
             continue
+        area_ratio = float(area / image_area)
+        if max_mask_area_ratio is not None and area_ratio > float(max_mask_area_ratio):
+            continue
         records.append(
             MaskFeature(
                 mask_id=parsed["mask_id"],
                 mask=mask,
                 area=area,
-                area_ratio=float(area / image_area),
+                area_ratio=area_ratio,
                 bbox=_bbox(mask),
                 centroid=_centroid(mask),
                 mean_rgb=_masked_mean(image, mask),

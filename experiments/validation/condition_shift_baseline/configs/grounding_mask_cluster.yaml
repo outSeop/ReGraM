@@ -1,5 +1,6 @@
 default:
   large_area_ratio: 0.01
+  max_mask_area_ratio: null
   small_area_ratio: 0.003
   cluster_candidate_area_ratio: null
   min_mask_area: 20
@@ -19,6 +20,7 @@ default:
 
 categories:
   breakfast_box:
+    max_mask_area_ratio: 0.55
     small_area_ratio: 0.006
     cluster_candidate_area_ratio: 0.02
     min_cluster_members: 3

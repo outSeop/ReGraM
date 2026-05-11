@@ -85,6 +85,26 @@ class GroundingMaskClusterTests(unittest.TestCase):
         self.assertEqual(stuff["debug"]["reason"], "small_masks_clustered")
         json.dumps(nodes)
 
+    def test_filters_oversized_masks_when_max_area_ratio_is_set(self) -> None:
+        image = np.full((100, 100, 3), 240, dtype=np.uint8)
+        raw_masks = [
+            {"mask_id": "background", "mask": box_mask((0, 0, 90, 90))},
+            {"mask_id": "object", "mask": box_mask((10, 10, 30, 30))},
+        ]
+
+        nodes = cluster_grounding_masks(
+            image,
+            raw_masks,
+            config={
+                "use_lab_color": False,
+                "max_mask_area_ratio": 0.55,
+            },
+        )
+
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["mask_ids"], ["object"])
+        self.assertEqual(nodes[0]["node_type"], "thing")
+
     def test_preserves_small_masks_when_cluster_conditions_fail(self) -> None:
         image = np.full((100, 100, 3), 128, dtype=np.uint8)
         raw_masks = [
