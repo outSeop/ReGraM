@@ -189,22 +189,37 @@ def _predict_robustsam_masks(
     image_t = torch.permute(image_t, (0, 3, 1, 2))
     image_t_transformed = transform.apply_image_torch(image_t.float())
     boxes_t = boxes_xyxy.to(device)
-    transformed_boxes = transform.apply_boxes_torch(boxes_t, image_t.shape[-2:])
-    data_dict = {
-        "image": image_t_transformed,
-        "boxes": transformed_boxes.unsqueeze(0),
-        "original_size": image_t.shape[-2:],
-    }
+    masks: list[torch.Tensor] = []
+    # RobustSAM's prompt encoder follows the demo path and expects one box
+    # prompt batch per image. Passing all GroundingDINO boxes at once can create
+    # mismatched sparse/box embedding batch dimensions.
     with torch.no_grad():
-        output = model.predict(opt, [data_dict], multimask_output=False, return_logits=False)[0]["masks"]
-    masks = output.detach().cpu()
-    if masks.ndim == 5 and masks.shape[0] == 1:
+        for box in boxes_t:
+            transformed_box = transform.apply_boxes_torch(box.unsqueeze(0), image_t.shape[-2:])
+            data_dict = {
+                "image": image_t_transformed,
+                "boxes": transformed_box.unsqueeze(0),
+                "original_size": image_t.shape[-2:],
+            }
+            output = model.predict(opt, [data_dict], multimask_output=False, return_logits=False)[0]["masks"]
+            mask = _normalize_robustsam_output_mask(output.detach().cpu())
+            masks.append(mask)
+    if not masks:
+        return np.zeros((0, image.shape[0], image.shape[1]), dtype=bool)
+    return torch.stack(masks, dim=0).numpy().astype(bool)
+
+
+def _normalize_robustsam_output_mask(output) -> "torch.Tensor":
+    import torch
+
+    masks = output
+    while masks.ndim > 2 and masks.shape[0] == 1:
         masks = masks[0]
-    if masks.ndim == 4 and masks.shape[1] == 1:
-        masks = masks[:, 0]
-    if masks.ndim == 2:
-        masks = masks.unsqueeze(0)
-    return masks.numpy().astype(bool)
+    if masks.ndim > 2 and masks.shape[0] != 1:
+        masks = masks[0]
+    if masks.ndim != 2:
+        masks = masks.reshape(masks.shape[-2], masks.shape[-1])
+    return masks.bool()
 
 
 def _background_mask(masks_bool: np.ndarray, background_box: list[int], *, shape: tuple[int, int]) -> np.ndarray:
