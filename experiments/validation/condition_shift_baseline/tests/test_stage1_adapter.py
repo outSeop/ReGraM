@@ -12,9 +12,11 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from stage1_adapter import (  # noqa: E402
+    CandidateMaskNormalizationConfig,
     PatchGraphConfig,
     build_component_prototypes,
     describe_candidate_masks,
+    normalize_candidate_masks,
     run_masked_patch_prototype_probe,
     score_candidate_against_prototypes,
     select_reliable_candidate_ids,
@@ -164,6 +166,35 @@ class Stage1AdapterTests(unittest.TestCase):
         self.assertNotIn("huge", selected)
         self.assertEqual(selected, {"best", "second"})
         self.assertEqual(debug["num_selected"], 2)
+
+    def test_normalizes_large_and_small_candidate_masks(self) -> None:
+        raw_masks = [
+            {"mask_id": "huge", "mask": box_mask((0, 0, 64, 64))},
+            {"mask_id": "medium", "mask": box_mask((5, 5, 20, 20))},
+            {"mask_id": "s1", "mask": box_mask((40, 40, 42, 42))},
+            {"mask_id": "s2", "mask": box_mask((43, 40, 45, 42))},
+            {"mask_id": "s3", "mask": box_mask((40, 43, 42, 45))},
+            {"mask_id": "isolated", "mask": box_mask((58, 58, 59, 59))},
+        ]
+
+        normalized, summary = normalize_candidate_masks(
+            raw_masks,
+            image_shape=(64, 64),
+            config=CandidateMaskNormalizationConfig(
+                max_mask_area_ratio=0.5,
+                min_mask_area_ratio=0.0001,
+                small_cluster_area_ratio=0.002,
+                min_cluster_members=3,
+                min_cluster_union_area_ratio=0.001,
+            ),
+        )
+
+        mask_ids = [item["mask_id"] for item in normalized]
+        self.assertIn("medium", mask_ids)
+        self.assertTrue(any(str(mask_id).startswith("stuff_cluster::") for mask_id in mask_ids))
+        self.assertNotIn("huge", mask_ids)
+        self.assertEqual(summary["num_excluded_large"], 1)
+        self.assertEqual(summary["num_excluded_small"], 1)
 
 
 if __name__ == "__main__":
