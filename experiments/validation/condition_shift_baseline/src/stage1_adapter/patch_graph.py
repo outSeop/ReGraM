@@ -23,7 +23,10 @@ class PatchGraphConfig:
 
     reliable_selection_mode: str = "top_k"
     top_k_reliable_masks: int = 8
+    prototype_top_k: int = 1
+    quantile: float = 0.75
     min_reliability: float = 0.35
+    mask_usage_field: str = "use_for_patch_graph"
     valid_node_types: tuple[str, ...] = ("valid_component", "small_detail")
     hard_excluded_node_types: tuple[str, ...] = ("invalid_supermask", "invalid_fragment")
     max_area_ratio: float = 0.30
@@ -81,6 +84,8 @@ def build_reliable_patch_membership(
         score = score_by_id.get(mask_id)
         if score is None or mask_id not in selected_ids:
             continue
+        if not bool(raw_mask.get(cfg.mask_usage_field, True)):
+            continue
         patch_mask = _resize_mask(np.asarray(raw_mask["mask"], dtype=bool), feature_shape)
         reliability = float(score.get("reliability", 0.0))
         record_index = len(reliable_records)
@@ -115,6 +120,14 @@ def select_reliable_candidate_ids(
 ) -> tuple[set[str], dict[str, Any]]:
     """Select mask ids using hard invalid filtering followed by threshold/top-k."""
     cfg = config or PatchGraphConfig()
+    if cfg.reliable_selection_mode == "none":
+        return set(), {
+            "mode": cfg.reliable_selection_mode,
+            "num_input_scores": len(candidate_scores),
+            "num_after_hard_filter": 0,
+            "num_selected": 0,
+            "selected_candidate_ids": [],
+        }
     candidates = [score for score in candidate_scores if _passes_hard_filter(score, cfg)]
     if cfg.reliable_selection_mode == "threshold":
         selected = [
@@ -125,6 +138,10 @@ def select_reliable_candidate_ids(
         ]
     elif cfg.reliable_selection_mode == "top_k":
         selected = sorted(candidates, key=_candidate_rank_key, reverse=True)[: max(0, int(cfg.top_k_reliable_masks))]
+    elif cfg.reliable_selection_mode == "prototype_top_k":
+        selected = _select_prototype_top_k(candidates, top_k=max(1, int(cfg.prototype_top_k)))
+    elif cfg.reliable_selection_mode == "quantile":
+        selected = _select_quantile(candidates, quantile=float(cfg.quantile))
     else:
         raise ValueError(f"unsupported reliable_selection_mode: {cfg.reliable_selection_mode}")
     selected_ids = {str(score.get("candidate_id")) for score in selected}
@@ -214,9 +231,15 @@ def run_masked_patch_prototype_probe(
         config=cfg,
     )
     reliable_mask = membership >= 0
+    region_masks = patch_region_masks(membership)
     teacher_assignment = np.argmax(teacher, axis=2).astype(np.int32)
     neighbor_assignment = np.argmax(neighbor, axis=2).astype(np.int32)
     edge_summary = summarize_patch_edges(membership)
+    edge_metrics = summarize_patch_edge_metrics(
+        membership=membership,
+        teacher_probabilities=teacher,
+        prediction_probabilities=neighbor,
+    )
     kl_map = _kl_divergence(teacher, neighbor)
     if np.any(reliable_mask):
         reliable_kl = float(np.mean(kl_map[reliable_mask]))
@@ -233,7 +256,17 @@ def run_masked_patch_prototype_probe(
         "neighbor_prediction_kl_reliable_mean": reliable_kl,
         "neighbor_argmax_match_ratio": float(np.mean(teacher_assignment == neighbor_assignment)),
         "neighbor_argmax_match_ratio_reliable": reliable_acc,
+        "inside_patch_match_ratio": _match_ratio(teacher_assignment, neighbor_assignment, region_masks["inside"]),
+        "boundary_patch_match_ratio": _match_ratio(teacher_assignment, neighbor_assignment, region_masks["boundary"]),
+        "ring_patch_match_ratio": _match_ratio(teacher_assignment, neighbor_assignment, region_masks["ring"]),
+        "inside_patch_kl_mean": _masked_mean(kl_map, region_masks["inside"]),
+        "boundary_patch_kl_mean": _masked_mean(kl_map, region_masks["boundary"]),
+        "ring_patch_kl_mean": _masked_mean(kl_map, region_masks["ring"]),
+        "same_mask_edge_consistency": edge_metrics["same_mask_edge_consistency"],
+        "cross_boundary_contrast": edge_metrics["cross_boundary_contrast"],
+        "boundary_preservation_score": edge_metrics["boundary_preservation_score"],
         "edge_summary": edge_summary,
+        "edge_metrics": edge_metrics,
         "membership_debug": membership_debug,
         "config": cfg.to_dict(),
     }
@@ -274,6 +307,60 @@ def summarize_patch_edges(membership: np.ndarray) -> dict[str, int]:
     return counts
 
 
+def patch_region_masks(membership: np.ndarray) -> dict[str, np.ndarray]:
+    """Return inside, boundary, and ring patch masks from membership ids."""
+    height, width = membership.shape
+    inside = np.zeros_like(membership, dtype=bool)
+    boundary = np.zeros_like(membership, dtype=bool)
+    ring = np.zeros_like(membership, dtype=bool)
+    for y in range(height):
+        for x in range(width):
+            target = int(membership[y, x])
+            neighbors = [int(membership[ny, nx]) for ny, nx in _neighbor_coords(y, x, height, width)]
+            if target >= 0:
+                if all(neighbor == target for neighbor in neighbors):
+                    inside[y, x] = True
+                else:
+                    boundary[y, x] = True
+            elif any(neighbor >= 0 for neighbor in neighbors):
+                ring[y, x] = True
+    return {"inside": inside, "boundary": boundary, "ring": ring}
+
+
+def summarize_patch_edge_metrics(
+    *,
+    membership: np.ndarray,
+    teacher_probabilities: np.ndarray,
+    prediction_probabilities: np.ndarray,
+) -> dict[str, float]:
+    """Summarize edge-type behavior for boundary-focused Stage 1 diagnostics."""
+    teacher_assignment = np.argmax(teacher_probabilities, axis=2)
+    prediction_assignment = np.argmax(prediction_probabilities, axis=2)
+    height, width = membership.shape
+    same_consistency = []
+    cross_contrast = []
+    boundary_preservation = []
+    for y in range(height):
+        for x in range(width):
+            target = int(membership[y, x])
+            for ny, nx in _neighbor_coords(y, x, height, width):
+                if ny < y or (ny == y and nx <= x):
+                    continue
+                neighbor = int(membership[ny, nx])
+                if target >= 0 and target == neighbor:
+                    same_consistency.append(float(prediction_assignment[y, x] == prediction_assignment[ny, nx]))
+                elif target >= 0 and neighbor >= 0 and target != neighbor:
+                    teacher_diff = teacher_assignment[y, x] != teacher_assignment[ny, nx]
+                    pred_diff = prediction_assignment[y, x] != prediction_assignment[ny, nx]
+                    cross_contrast.append(float(pred_diff))
+                    boundary_preservation.append(float(teacher_diff == pred_diff))
+    return {
+        "same_mask_edge_consistency": float(np.mean(same_consistency)) if same_consistency else 0.0,
+        "cross_boundary_contrast": float(np.mean(cross_contrast)) if cross_contrast else 0.0,
+        "boundary_preservation_score": float(np.mean(boundary_preservation)) if boundary_preservation else 0.0,
+    }
+
+
 def _passes_hard_filter(score: dict[str, Any], config: PatchGraphConfig) -> bool:
     node_type = str(score.get("node_type"))
     area_ratio = float(score.get("area_ratio", 0.0))
@@ -284,6 +371,25 @@ def _passes_hard_filter(score: dict[str, Any], config: PatchGraphConfig) -> bool
     )
 
 
+def _select_prototype_top_k(candidates: list[dict[str, Any]], *, top_k: int) -> list[dict[str, Any]]:
+    by_prototype: dict[str, list[dict[str, Any]]] = {}
+    for score in candidates:
+        prototype_id = str(score.get("best_prototype_id", "unknown"))
+        by_prototype.setdefault(prototype_id, []).append(score)
+    selected: list[dict[str, Any]] = []
+    for scores in by_prototype.values():
+        selected.extend(sorted(scores, key=_candidate_rank_key, reverse=True)[:top_k])
+    return selected
+
+
+def _select_quantile(candidates: list[dict[str, Any]], *, quantile: float) -> list[dict[str, Any]]:
+    if not candidates:
+        return []
+    reliabilities = np.asarray([float(score.get("reliability", 0.0)) for score in candidates], dtype=np.float32)
+    threshold = float(np.quantile(reliabilities, min(1.0, max(0.0, quantile))))
+    return [score for score in candidates if float(score.get("reliability", 0.0)) >= threshold]
+
+
 def _candidate_rank_key(score: dict[str, Any]) -> tuple[float, float, float]:
     node_type = str(score.get("node_type"))
     node_bonus = 1.0 if node_type == "valid_component" else 0.5 if node_type == "small_detail" else 0.0
@@ -292,6 +398,18 @@ def _candidate_rank_key(score: dict[str, Any]) -> tuple[float, float, float]:
         float(score.get("reliability", 0.0)),
         float(score.get("max_prototype_similarity", 0.0)),
     )
+
+
+def _match_ratio(teacher_assignment: np.ndarray, prediction_assignment: np.ndarray, mask: np.ndarray) -> float:
+    if not np.any(mask):
+        return 0.0
+    return float(np.mean(teacher_assignment[mask] == prediction_assignment[mask]))
+
+
+def _masked_mean(values: np.ndarray, mask: np.ndarray) -> float:
+    if not np.any(mask):
+        return 0.0
+    return float(np.mean(values[mask]))
 
 
 def _mask_id(raw_mask: dict[str, Any], index: int) -> str:

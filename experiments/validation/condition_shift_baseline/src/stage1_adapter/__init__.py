@@ -6,8 +6,10 @@ from stage1_adapter.patch_graph import (
     PatchGraphConfig,
     PatchGraphProbeResult,
     build_reliable_patch_membership,
+    patch_region_masks,
     run_masked_patch_prototype_probe,
     select_reliable_candidate_ids,
+    summarize_patch_edge_metrics,
     summarize_patch_edges,
 )
 from stage1_adapter.prototypes import (
@@ -27,9 +29,11 @@ __all__ = [
     "build_component_prototypes",
     "describe_candidate_masks",
     "normalize_candidate_masks",
+    "patch_region_masks",
     "run_masked_patch_prototype_probe",
     "score_candidate_against_prototypes",
     "select_reliable_candidate_ids",
+    "summarize_patch_edge_metrics",
     "summarize_patch_edges",
     "summarize_adapter_scores",
 ]

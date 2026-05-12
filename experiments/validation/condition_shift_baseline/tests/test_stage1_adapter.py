@@ -87,6 +87,8 @@ class Stage1AdapterTests(unittest.TestCase):
         self.assertIn("too_large_container_or_supermask", score["debug"]["invalid_reasons"])
         summary = summarize_adapter_scores([score])
         self.assertEqual(summary["num_candidates"], 1)
+        self.assertIn("prototype_margin", score)
+        self.assertIn("top2_prototype_similarity", score)
 
     def test_masked_patch_prototype_probe_uses_reliable_membership(self) -> None:
         feature_map = np.zeros((4, 4, 3), dtype=np.float32)
@@ -131,6 +133,9 @@ class Stage1AdapterTests(unittest.TestCase):
         self.assertEqual(result.summary["num_reliable_patches"], 16)
         self.assertGreater(result.summary["edge_summary"]["num_same_mask_edges"], 0)
         self.assertGreater(result.summary["edge_summary"]["num_cross_boundary_edges"], 0)
+        self.assertIn("boundary_patch_match_ratio", result.summary)
+        self.assertIn("same_mask_edge_consistency", result.summary)
+        self.assertIn("cross_boundary_contrast", result.summary)
         self.assertEqual(result.membership.shape, (4, 4))
 
     def test_top_k_selection_keeps_best_after_hard_filter(self) -> None:
@@ -167,6 +172,13 @@ class Stage1AdapterTests(unittest.TestCase):
         self.assertEqual(selected, {"best", "second"})
         self.assertEqual(debug["num_selected"], 2)
 
+        none_selected, none_debug = select_reliable_candidate_ids(
+            scores,
+            config=PatchGraphConfig(reliable_selection_mode="none"),
+        )
+        self.assertEqual(none_selected, set())
+        self.assertEqual(none_debug["num_selected"], 0)
+
     def test_normalizes_large_and_small_candidate_masks(self) -> None:
         raw_masks = [
             {"mask_id": "huge", "mask": box_mask((0, 0, 64, 64))},
@@ -192,6 +204,12 @@ class Stage1AdapterTests(unittest.TestCase):
         mask_ids = [item["mask_id"] for item in normalized]
         self.assertIn("medium", mask_ids)
         self.assertTrue(any(str(mask_id).startswith("stuff_cluster::") for mask_id in mask_ids))
+        stuff = next(item for item in normalized if str(item["mask_id"]).startswith("stuff_cluster::"))
+        medium = next(item for item in normalized if item["mask_id"] == "medium")
+        self.assertTrue(stuff["use_for_patch_graph"])
+        self.assertFalse(stuff["use_as_component_node"])
+        self.assertTrue(medium["use_for_patch_graph"])
+        self.assertTrue(medium["use_as_component_node"])
         self.assertNotIn("huge", mask_ids)
         self.assertEqual(summary["num_excluded_large"], 1)
         self.assertEqual(summary["num_excluded_small"], 1)

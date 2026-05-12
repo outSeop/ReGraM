@@ -101,12 +101,16 @@ def _record_to_mask(record: dict[str, Any], *, normalization_type: str) -> dict[
     raw["mask_id"] = record["mask_id"]
     raw["mask"] = record["mask"]
     raw["normalization_type"] = normalization_type
+    raw["use_for_patch_graph"] = True
+    raw["use_as_component_node"] = normalization_type == "thing_candidate"
     raw["member_mask_ids"] = [record["mask_id"]]
     raw["debug"] = {
         **dict(raw.get("debug", {})),
         "stage1_candidate_normalization": {
             "area_ratio": record["area_ratio"],
             "normalization_type": normalization_type,
+            "use_for_patch_graph": raw["use_for_patch_graph"],
+            "use_as_component_node": raw["use_as_component_node"],
         },
     }
     return raw
@@ -119,10 +123,14 @@ def _cluster_to_mask(group: list[dict[str, Any]], *, union_mask: np.ndarray, uni
         "mask": union_mask,
         "source": "stage1_candidate_normalization",
         "normalization_type": "stuff_cluster_candidate",
+        "use_for_patch_graph": True,
+        "use_as_component_node": False,
         "member_mask_ids": member_ids,
         "debug": {
             "stage1_candidate_normalization": {
                 "normalization_type": "stuff_cluster_candidate",
+                "use_for_patch_graph": True,
+                "use_as_component_node": False,
                 "member_mask_ids": member_ids,
                 "member_area_ratios": [record["area_ratio"] for record in group],
                 "union_area_ratio": union_area_ratio,

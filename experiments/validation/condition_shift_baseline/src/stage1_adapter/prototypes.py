@@ -108,6 +108,9 @@ def score_candidate_against_prototypes(
     best_index = int(np.argmax(similarities))
     best = prototypes[best_index]
     max_similarity = float(similarities[best_index])
+    sorted_similarities = np.sort(similarities)
+    top2_similarity = float(sorted_similarities[-2]) if len(sorted_similarities) > 1 else max_similarity
+    prototype_margin = float(max_similarity - top2_similarity)
     entropy = _entropy(probabilities)
     entropy_norm = entropy / max(log(len(prototypes)), 1e-6)
     geometry_score = _geometry_compatibility(descriptor, best)
@@ -117,10 +120,17 @@ def score_candidate_against_prototypes(
         fragment_area_ratio=fragment_area_ratio,
         supermask_containment_threshold=supermask_containment_threshold,
     )
-    reliability = _clamp01((max_similarity + 1.0) / 2.0)
-    reliability *= geometry_score
-    reliability *= _clamp01(1.0 - entropy_norm)
-    reliability *= _clamp01(descriptor.inside_feature_coherence)
+    similarity_score = _clamp01((max_similarity + 1.0) / 2.0)
+    margin_score = _clamp01(0.5 + 2.0 * prototype_margin)
+    entropy_penalty = 0.10 * _clamp01(entropy_norm)
+    reliability = (
+        0.45 * similarity_score
+        + 0.20 * margin_score
+        + 0.20 * geometry_score
+        + 0.15 * _clamp01(descriptor.inside_feature_coherence)
+        - entropy_penalty
+    )
+    reliability = _clamp01(reliability)
     if invalid_reasons:
         reliability *= 0.1
     node_type = _node_type(descriptor, invalid_reasons=invalid_reasons, reliability=reliability)
@@ -131,6 +141,8 @@ def score_candidate_against_prototypes(
         "best_prototype_id": best.prototype_id,
         "reliability": float(reliability),
         "max_prototype_similarity": max_similarity,
+        "top2_prototype_similarity": top2_similarity,
+        "prototype_margin": prototype_margin,
         "prototype_entropy": float(entropy),
         "prototype_entropy_norm": float(entropy_norm),
         "geometry_compatibility": float(geometry_score),
