@@ -16,6 +16,8 @@ class ComponentPrototype:
     prototype_id: str
     member_count: int
     mean_vector: list[float]
+    inside_mean: list[float]
+    ring_mean: list[float]
     centroid_mean: list[float]
     area_ratio_mean: float
     area_ratio_std: float
@@ -47,6 +49,8 @@ def build_component_prototypes(
             continue
         members = [descriptors[int(index)] for index in member_indices]
         raw_vectors = np.stack([descriptor_vector(item) for item in members], axis=0)
+        inside_means = np.stack([np.asarray(item.inside_mean, dtype=np.float32) for item in members], axis=0)
+        ring_means = np.stack([np.asarray(item.ring_mean, dtype=np.float32) for item in members], axis=0)
         area_ratios = np.asarray([item.area_ratio for item in members], dtype=np.float32)
         centroids = np.asarray([item.centroid for item in members], dtype=np.float32)
         prototypes.append(
@@ -54,6 +58,8 @@ def build_component_prototypes(
                 prototype_id=f"prototype_{len(prototypes):03d}",
                 member_count=len(members),
                 mean_vector=raw_vectors.mean(axis=0).astype(float).tolist(),
+                inside_mean=inside_means.mean(axis=0).astype(float).tolist(),
+                ring_mean=ring_means.mean(axis=0).astype(float).tolist(),
                 centroid_mean=centroids.mean(axis=0).astype(float).tolist(),
                 area_ratio_mean=float(area_ratios.mean()),
                 area_ratio_std=float(area_ratios.std()),
@@ -71,6 +77,8 @@ def build_component_prototypes(
             prototype_id=f"prototype_{index:03d}",
             member_count=item.member_count,
             mean_vector=item.mean_vector,
+            inside_mean=item.inside_mean,
+            ring_mean=item.ring_mean,
             centroid_mean=item.centroid_mean,
             area_ratio_mean=item.area_ratio_mean,
             area_ratio_std=item.area_ratio_std,

@@ -12,8 +12,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from stage1_adapter import (  # noqa: E402
+    PatchGraphConfig,
     build_component_prototypes,
     describe_candidate_masks,
+    run_masked_patch_prototype_probe,
     score_candidate_against_prototypes,
     summarize_adapter_scores,
 )
@@ -82,6 +84,51 @@ class Stage1AdapterTests(unittest.TestCase):
         self.assertIn("too_large_container_or_supermask", score["debug"]["invalid_reasons"])
         summary = summarize_adapter_scores([score])
         self.assertEqual(summary["num_candidates"], 1)
+
+    def test_masked_patch_prototype_probe_uses_reliable_membership(self) -> None:
+        feature_map = np.zeros((4, 4, 3), dtype=np.float32)
+        feature_map[:, :2, 0] = 1.0
+        feature_map[:, 2:, 1] = 1.0
+        clean_masks = [
+            {"mask_id": "left", "mask": box_mask((0, 0, 32, 64))},
+            {"mask_id": "right", "mask": box_mask((32, 0, 64, 64))},
+        ]
+        clean_descriptors = describe_candidate_masks(
+            image_id="000.png",
+            feature_map=feature_map,
+            raw_masks=clean_masks,
+            image_shape=(64, 64),
+            source="clean",
+        )
+        prototypes = build_component_prototypes(clean_descriptors, max_prototypes=2)
+        candidate_scores = [
+            {
+                "candidate_id": "left",
+                "node_type": "valid_component",
+                "reliability": 0.9,
+                "area_ratio": 0.5,
+            },
+            {
+                "candidate_id": "right",
+                "node_type": "valid_component",
+                "reliability": 0.9,
+                "area_ratio": 0.5,
+            },
+        ]
+
+        result = run_masked_patch_prototype_probe(
+            feature_map=feature_map,
+            raw_masks=clean_masks,
+            candidate_scores=candidate_scores,
+            prototypes=prototypes,
+            image_shape=(64, 64),
+            config=PatchGraphConfig(min_reliability=0.5),
+        )
+
+        self.assertEqual(result.summary["num_reliable_patches"], 16)
+        self.assertGreater(result.summary["edge_summary"]["num_same_mask_edges"], 0)
+        self.assertGreater(result.summary["edge_summary"]["num_cross_boundary_edges"], 0)
+        self.assertEqual(result.membership.shape, (4, 4))
 
 
 if __name__ == "__main__":
