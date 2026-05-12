@@ -136,7 +136,47 @@ class Stage1AdapterTests(unittest.TestCase):
         self.assertIn("boundary_patch_match_ratio", result.summary)
         self.assertIn("same_mask_edge_consistency", result.summary)
         self.assertIn("cross_boundary_contrast", result.summary)
+        self.assertIn("teacher_quality", result.summary)
+        self.assertIn("dino_teacher_quality", result.summary)
         self.assertEqual(result.membership.shape, (4, 4))
+
+    def test_mask_smoothed_teacher_changes_only_inside_membership(self) -> None:
+        feature_map = np.zeros((4, 4, 3), dtype=np.float32)
+        feature_map[:, :2, 0] = 1.0
+        feature_map[:, 2:, 1] = 1.0
+        clean_masks = [
+            {"mask_id": "left", "mask": box_mask((0, 0, 32, 64))},
+            {"mask_id": "right", "mask": box_mask((32, 0, 64, 64))},
+        ]
+        clean_descriptors = describe_candidate_masks(
+            image_id="000.png",
+            feature_map=feature_map,
+            raw_masks=clean_masks,
+            image_shape=(64, 64),
+            source="clean",
+        )
+        prototypes = build_component_prototypes(clean_descriptors, max_prototypes=2)
+        candidate_scores = [
+            {"candidate_id": "left", "node_type": "valid_component", "reliability": 0.9, "area_ratio": 0.5},
+            {"candidate_id": "right", "node_type": "valid_component", "reliability": 0.9, "area_ratio": 0.5},
+        ]
+
+        result = run_masked_patch_prototype_probe(
+            feature_map=feature_map,
+            raw_masks=clean_masks,
+            candidate_scores=candidate_scores,
+            prototypes=prototypes,
+            image_shape=(64, 64),
+            config=PatchGraphConfig(
+                target_type="mask_smoothed",
+                teacher_smoothing_lambda=0.5,
+                max_area_ratio=0.6,
+            ),
+        )
+
+        self.assertEqual(result.teacher_probabilities.shape, result.dino_teacher_probabilities.shape)
+        self.assertGreaterEqual(float(result.teacher_delta_map.mean()), 0.0)
+        self.assertEqual(result.summary["config"]["target_type"], "mask_smoothed")
 
     def test_top_k_selection_keeps_best_after_hard_filter(self) -> None:
         scores = [

@@ -9,8 +9,10 @@ from stage1_adapter.patch_graph import (
     patch_region_masks,
     run_masked_patch_prototype_probe,
     select_reliable_candidate_ids,
+    smooth_teacher_with_membership,
     summarize_patch_edge_metrics,
     summarize_patch_edges,
+    summarize_teacher_quality,
 )
 from stage1_adapter.prototypes import (
     ComponentPrototype,
@@ -33,7 +35,9 @@ __all__ = [
     "run_masked_patch_prototype_probe",
     "score_candidate_against_prototypes",
     "select_reliable_candidate_ids",
+    "smooth_teacher_with_membership",
     "summarize_patch_edge_metrics",
     "summarize_patch_edges",
+    "summarize_teacher_quality",
     "summarize_adapter_scores",
 ]

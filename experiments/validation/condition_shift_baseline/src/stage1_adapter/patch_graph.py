@@ -25,6 +25,8 @@ class PatchGraphConfig:
     top_k_reliable_masks: int = 8
     prototype_top_k: int = 1
     quantile: float = 0.75
+    target_type: str = "dino_only"
+    teacher_smoothing_lambda: float = 0.0
     min_reliability: float = 0.35
     mask_usage_field: str = "use_for_patch_graph"
     valid_node_types: tuple[str, ...] = ("valid_component", "small_detail")
@@ -50,7 +52,10 @@ class PatchGraphProbeResult:
     reliable_mask: np.ndarray
     teacher_assignment: np.ndarray
     neighbor_assignment: np.ndarray
+    dino_teacher_assignment: np.ndarray
+    teacher_delta_map: np.ndarray
     teacher_probabilities: np.ndarray
+    dino_teacher_probabilities: np.ndarray
     neighbor_probabilities: np.ndarray
 
 
@@ -205,6 +210,26 @@ def predict_masked_patch_prototypes_from_neighbors(
     return prediction
 
 
+def smooth_teacher_with_membership(
+    probabilities: np.ndarray,
+    membership: np.ndarray,
+    *,
+    smoothing_lambda: float,
+) -> np.ndarray:
+    """Weakly smooth prototype distributions inside each reliable mask only."""
+    lam = float(min(1.0, max(0.0, smoothing_lambda)))
+    if lam <= 0.0 or not np.any(membership >= 0):
+        return probabilities.copy()
+    smoothed = probabilities.copy()
+    for membership_id in sorted(int(value) for value in np.unique(membership) if int(value) >= 0):
+        mask = membership == membership_id
+        if not np.any(mask):
+            continue
+        mean_distribution = probabilities[mask].mean(axis=0)
+        smoothed[mask] = (1.0 - lam) * probabilities[mask] + lam * mean_distribution[None, :]
+    return _normalize_probabilities(smoothed)
+
+
 def run_masked_patch_prototype_probe(
     *,
     feature_map: np.ndarray,
@@ -223,7 +248,17 @@ def run_masked_patch_prototype_probe(
         image_shape=image_shape,
         config=cfg,
     )
-    teacher = assign_patch_prototypes(feature_map=feature_map, prototypes=prototypes, config=cfg)
+    dino_teacher = assign_patch_prototypes(feature_map=feature_map, prototypes=prototypes, config=cfg)
+    if cfg.target_type == "dino_only":
+        teacher = dino_teacher
+    elif cfg.target_type == "mask_smoothed":
+        teacher = smooth_teacher_with_membership(
+            dino_teacher,
+            membership,
+            smoothing_lambda=cfg.teacher_smoothing_lambda,
+        )
+    else:
+        raise ValueError(f"unsupported target_type: {cfg.target_type}")
     neighbor = predict_masked_patch_prototypes_from_neighbors(
         teacher_probabilities=teacher,
         membership=membership,
@@ -233,14 +268,24 @@ def run_masked_patch_prototype_probe(
     reliable_mask = membership >= 0
     region_masks = patch_region_masks(membership)
     teacher_assignment = np.argmax(teacher, axis=2).astype(np.int32)
+    dino_teacher_assignment = np.argmax(dino_teacher, axis=2).astype(np.int32)
     neighbor_assignment = np.argmax(neighbor, axis=2).astype(np.int32)
     edge_summary = summarize_patch_edges(membership)
+    teacher_quality = summarize_teacher_quality(
+        teacher_probabilities=teacher,
+        membership=membership,
+    )
+    dino_teacher_quality = summarize_teacher_quality(
+        teacher_probabilities=dino_teacher,
+        membership=membership,
+    )
     edge_metrics = summarize_patch_edge_metrics(
         membership=membership,
         teacher_probabilities=teacher,
         prediction_probabilities=neighbor,
     )
     kl_map = _kl_divergence(teacher, neighbor)
+    teacher_delta_map = _kl_divergence(dino_teacher, teacher)
     if np.any(reliable_mask):
         reliable_kl = float(np.mean(kl_map[reliable_mask]))
         reliable_acc = float(np.mean(teacher_assignment[reliable_mask] == neighbor_assignment[reliable_mask]))
@@ -252,6 +297,8 @@ def run_masked_patch_prototype_probe(
         "num_reliable_patches": int(reliable_mask.sum()),
         "reliable_patch_ratio": float(reliable_mask.mean()),
         "teacher_entropy_mean": float(np.mean(_entropy(teacher))),
+        "dino_teacher_entropy_mean": float(np.mean(_entropy(dino_teacher))),
+        "teacher_delta_kl_mean": float(np.mean(teacher_delta_map)),
         "neighbor_prediction_kl_mean": float(np.mean(kl_map)),
         "neighbor_prediction_kl_reliable_mean": reliable_kl,
         "neighbor_argmax_match_ratio": float(np.mean(teacher_assignment == neighbor_assignment)),
@@ -267,6 +314,8 @@ def run_masked_patch_prototype_probe(
         "boundary_preservation_score": edge_metrics["boundary_preservation_score"],
         "edge_summary": edge_summary,
         "edge_metrics": edge_metrics,
+        "teacher_quality": teacher_quality,
+        "dino_teacher_quality": dino_teacher_quality,
         "membership_debug": membership_debug,
         "config": cfg.to_dict(),
     }
@@ -276,7 +325,10 @@ def run_masked_patch_prototype_probe(
         reliable_mask=reliable_mask,
         teacher_assignment=teacher_assignment,
         neighbor_assignment=neighbor_assignment,
+        dino_teacher_assignment=dino_teacher_assignment,
+        teacher_delta_map=teacher_delta_map,
         teacher_probabilities=teacher,
+        dino_teacher_probabilities=dino_teacher,
         neighbor_probabilities=neighbor,
     )
 
@@ -358,6 +410,45 @@ def summarize_patch_edge_metrics(
         "same_mask_edge_consistency": float(np.mean(same_consistency)) if same_consistency else 0.0,
         "cross_boundary_contrast": float(np.mean(cross_contrast)) if cross_contrast else 0.0,
         "boundary_preservation_score": float(np.mean(boundary_preservation)) if boundary_preservation else 0.0,
+    }
+
+
+def summarize_teacher_quality(
+    *,
+    teacher_probabilities: np.ndarray,
+    membership: np.ndarray,
+) -> dict[str, Any]:
+    """Measure whether a teacher map is coherent within masks and sharp at boundaries."""
+    assignment = np.argmax(teacher_probabilities, axis=2)
+    height, width = membership.shape
+    same_consistency = []
+    cross_contrast = []
+    boundary_sharpness = []
+    for y in range(height):
+        for x in range(width):
+            target = int(membership[y, x])
+            for ny, nx in _neighbor_coords(y, x, height, width):
+                if ny < y or (ny == y and nx <= x):
+                    continue
+                neighbor = int(membership[ny, nx])
+                if target >= 0 and target == neighbor:
+                    same_consistency.append(float(assignment[y, x] == assignment[ny, nx]))
+                elif target >= 0 and neighbor >= 0 and target != neighbor:
+                    cross_contrast.append(float(assignment[y, x] != assignment[ny, nx]))
+                    boundary_sharpness.append(float(np.abs(teacher_probabilities[y, x] - teacher_probabilities[ny, nx]).sum()))
+    flat_assignment = assignment.reshape(-1)
+    num_prototypes = teacher_probabilities.shape[-1]
+    counts = np.bincount(flat_assignment, minlength=num_prototypes).astype(np.float32)
+    distribution = counts / max(float(counts.sum()), 1.0)
+    return {
+        "teacher_entropy_mean": float(np.mean(_entropy(teacher_probabilities))),
+        "same_mask_consistency": float(np.mean(same_consistency)) if same_consistency else 0.0,
+        "cross_boundary_contrast": float(np.mean(cross_contrast)) if cross_contrast else 0.0,
+        "boundary_sharpness": float(np.mean(boundary_sharpness)) if boundary_sharpness else 0.0,
+        "prototype_area_distribution": {
+            f"prototype_{index:03d}": float(value)
+            for index, value in enumerate(distribution)
+        },
     }
 
 
@@ -459,6 +550,10 @@ def _softmax(values: np.ndarray, *, axis: int) -> np.ndarray:
     shifted = values - np.max(values, axis=axis, keepdims=True)
     exp_values = np.exp(shifted)
     return exp_values / np.maximum(exp_values.sum(axis=axis, keepdims=True), 1e-8)
+
+
+def _normalize_probabilities(values: np.ndarray) -> np.ndarray:
+    return values / np.maximum(values.sum(axis=-1, keepdims=True), 1e-8)
 
 
 def _entropy(probabilities: np.ndarray) -> np.ndarray:
