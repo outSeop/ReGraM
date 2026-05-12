@@ -177,6 +177,37 @@ class Stage1AdapterTests(unittest.TestCase):
         self.assertEqual(result.teacher_probabilities.shape, result.dino_teacher_probabilities.shape)
         self.assertGreaterEqual(float(result.teacher_delta_map.mean()), 0.0)
         self.assertEqual(result.summary["config"]["target_type"], "mask_smoothed")
+        self.assertIn("teacher_argmax_change_rate", result.summary)
+        self.assertIn("boundary_delta_mean", result.summary)
+
+    def test_local_and_boundary_weighted_smoothing_modes_run(self) -> None:
+        probabilities = np.zeros((3, 3, 2), dtype=np.float32)
+        probabilities[:, :, 0] = 0.8
+        probabilities[:, :, 1] = 0.2
+        probabilities[1, 1] = [0.2, 0.8]
+        membership = np.zeros((3, 3), dtype=np.int32)
+
+        from stage1_adapter import smooth_teacher_with_membership  # noqa: PLC0415
+
+        local = smooth_teacher_with_membership(
+            probabilities,
+            membership,
+            smoothing_mode="local_same_mask",
+            smoothing_lambda=0.5,
+        )
+        boundary = smooth_teacher_with_membership(
+            probabilities,
+            membership,
+            smoothing_mode="boundary_weighted_local",
+            smoothing_lambda=0.3,
+            inner_lambda=0.1,
+            boundary_lambda=0.3,
+        )
+
+        self.assertEqual(local.shape, probabilities.shape)
+        self.assertEqual(boundary.shape, probabilities.shape)
+        self.assertTrue(np.allclose(local.sum(axis=-1), 1.0))
+        self.assertTrue(np.allclose(boundary.sum(axis=-1), 1.0))
 
     def test_top_k_selection_keeps_best_after_hard_filter(self) -> None:
         scores = [

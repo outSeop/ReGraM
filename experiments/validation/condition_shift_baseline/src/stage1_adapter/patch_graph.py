@@ -26,7 +26,10 @@ class PatchGraphConfig:
     prototype_top_k: int = 1
     quantile: float = 0.75
     target_type: str = "dino_only"
+    teacher_smoothing_mode: str = "global_same_mask"
     teacher_smoothing_lambda: float = 0.0
+    teacher_inner_smoothing_lambda: float = 0.1
+    teacher_boundary_smoothing_lambda: float = 0.3
     min_reliability: float = 0.35
     mask_usage_field: str = "use_for_patch_graph"
     valid_node_types: tuple[str, ...] = ("valid_component", "small_detail")
@@ -214,12 +217,42 @@ def smooth_teacher_with_membership(
     probabilities: np.ndarray,
     membership: np.ndarray,
     *,
+    smoothing_mode: str = "global_same_mask",
     smoothing_lambda: float,
+    inner_lambda: float = 0.1,
+    boundary_lambda: float = 0.3,
 ) -> np.ndarray:
     """Weakly smooth prototype distributions inside each reliable mask only."""
     lam = float(min(1.0, max(0.0, smoothing_lambda)))
-    if lam <= 0.0 or not np.any(membership >= 0):
+    if smoothing_mode == "none" or not np.any(membership >= 0):
         return probabilities.copy()
+    if smoothing_mode == "global_same_mask" and lam <= 0.0:
+        return probabilities.copy()
+    if smoothing_mode in {"local_same_mask", "boundary_weighted_local"} and max(lam, inner_lambda, boundary_lambda) <= 0.0:
+        return probabilities.copy()
+    if smoothing_mode == "global_same_mask":
+        return _smooth_teacher_global_same_mask(probabilities, membership, smoothing_lambda=lam)
+    if smoothing_mode == "local_same_mask":
+        return _smooth_teacher_local_same_mask(probabilities, membership, smoothing_lambda=lam)
+    if smoothing_mode == "boundary_weighted_local":
+        return _smooth_teacher_local_same_mask(
+            probabilities,
+            membership,
+            smoothing_lambda=lam,
+            inner_lambda=inner_lambda,
+            boundary_lambda=boundary_lambda,
+            boundary_weighted=True,
+        )
+    raise ValueError(f"unsupported teacher_smoothing_mode: {smoothing_mode}")
+
+
+def _smooth_teacher_global_same_mask(
+    probabilities: np.ndarray,
+    membership: np.ndarray,
+    *,
+    smoothing_lambda: float,
+) -> np.ndarray:
+    lam = float(min(1.0, max(0.0, smoothing_lambda)))
     smoothed = probabilities.copy()
     for membership_id in sorted(int(value) for value in np.unique(membership) if int(value) >= 0):
         mask = membership == membership_id
@@ -227,6 +260,42 @@ def smooth_teacher_with_membership(
             continue
         mean_distribution = probabilities[mask].mean(axis=0)
         smoothed[mask] = (1.0 - lam) * probabilities[mask] + lam * mean_distribution[None, :]
+    return _normalize_probabilities(smoothed)
+
+
+def _smooth_teacher_local_same_mask(
+    probabilities: np.ndarray,
+    membership: np.ndarray,
+    *,
+    smoothing_lambda: float,
+    inner_lambda: float = 0.1,
+    boundary_lambda: float = 0.3,
+    boundary_weighted: bool = False,
+) -> np.ndarray:
+    height, width, _ = probabilities.shape
+    region_masks = patch_region_masks(membership)
+    smoothed = probabilities.copy()
+    for y in range(height):
+        for x in range(width):
+            membership_id = int(membership[y, x])
+            if membership_id < 0:
+                continue
+            same_neighbors = [
+                probabilities[ny, nx]
+                for ny, nx in _neighbor_coords(y, x, height, width)
+                if int(membership[ny, nx]) == membership_id
+            ]
+            if not same_neighbors:
+                continue
+            if boundary_weighted:
+                lam = boundary_lambda if bool(region_masks["boundary"][y, x]) else inner_lambda
+            else:
+                lam = smoothing_lambda
+            lam = float(min(1.0, max(0.0, lam)))
+            if lam <= 0.0:
+                continue
+            local_mean = np.mean(np.stack(same_neighbors, axis=0), axis=0)
+            smoothed[y, x] = (1.0 - lam) * probabilities[y, x] + lam * local_mean
     return _normalize_probabilities(smoothed)
 
 
@@ -255,7 +324,10 @@ def run_masked_patch_prototype_probe(
         teacher = smooth_teacher_with_membership(
             dino_teacher,
             membership,
+            smoothing_mode=cfg.teacher_smoothing_mode,
             smoothing_lambda=cfg.teacher_smoothing_lambda,
+            inner_lambda=cfg.teacher_inner_smoothing_lambda,
+            boundary_lambda=cfg.teacher_boundary_smoothing_lambda,
         )
     else:
         raise ValueError(f"unsupported target_type: {cfg.target_type}")
@@ -286,6 +358,7 @@ def run_masked_patch_prototype_probe(
     )
     kl_map = _kl_divergence(teacher, neighbor)
     teacher_delta_map = _kl_divergence(dino_teacher, teacher)
+    teacher_argmax_change = dino_teacher_assignment != teacher_assignment
     if np.any(reliable_mask):
         reliable_kl = float(np.mean(kl_map[reliable_mask]))
         reliable_acc = float(np.mean(teacher_assignment[reliable_mask] == neighbor_assignment[reliable_mask]))
@@ -299,6 +372,8 @@ def run_masked_patch_prototype_probe(
         "teacher_entropy_mean": float(np.mean(_entropy(teacher))),
         "dino_teacher_entropy_mean": float(np.mean(_entropy(dino_teacher))),
         "teacher_delta_kl_mean": float(np.mean(teacher_delta_map)),
+        "teacher_argmax_change_rate": float(np.mean(teacher_argmax_change)),
+        "boundary_delta_mean": _masked_mean(teacher_delta_map, region_masks["boundary"]),
         "neighbor_prediction_kl_mean": float(np.mean(kl_map)),
         "neighbor_prediction_kl_reliable_mean": reliable_kl,
         "neighbor_argmax_match_ratio": float(np.mean(teacher_assignment == neighbor_assignment)),
@@ -312,6 +387,9 @@ def run_masked_patch_prototype_probe(
         "same_mask_edge_consistency": edge_metrics["same_mask_edge_consistency"],
         "cross_boundary_contrast": edge_metrics["cross_boundary_contrast"],
         "boundary_preservation_score": edge_metrics["boundary_preservation_score"],
+        "mask_teacher_agreement": teacher_quality["mask_teacher_agreement"],
+        "cross_mask_teacher_separation": teacher_quality["cross_mask_teacher_separation"],
+        "boundary_sharpness": teacher_quality["boundary_sharpness"],
         "edge_summary": edge_summary,
         "edge_metrics": edge_metrics,
         "teacher_quality": teacher_quality,
@@ -442,6 +520,8 @@ def summarize_teacher_quality(
     distribution = counts / max(float(counts.sum()), 1.0)
     return {
         "teacher_entropy_mean": float(np.mean(_entropy(teacher_probabilities))),
+        "mask_teacher_agreement": float(np.mean(same_consistency)) if same_consistency else 0.0,
+        "cross_mask_teacher_separation": float(np.mean(cross_contrast)) if cross_contrast else 0.0,
         "same_mask_consistency": float(np.mean(same_consistency)) if same_consistency else 0.0,
         "cross_boundary_contrast": float(np.mean(cross_contrast)) if cross_contrast else 0.0,
         "boundary_sharpness": float(np.mean(boundary_sharpness)) if boundary_sharpness else 0.0,
