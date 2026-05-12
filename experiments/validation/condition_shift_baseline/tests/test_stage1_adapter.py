@@ -17,6 +17,7 @@ from stage1_adapter import (  # noqa: E402
     describe_candidate_masks,
     run_masked_patch_prototype_probe,
     score_candidate_against_prototypes,
+    select_reliable_candidate_ids,
     summarize_adapter_scores,
 )
 
@@ -122,13 +123,47 @@ class Stage1AdapterTests(unittest.TestCase):
             candidate_scores=candidate_scores,
             prototypes=prototypes,
             image_shape=(64, 64),
-            config=PatchGraphConfig(min_reliability=0.5),
+            config=PatchGraphConfig(min_reliability=0.5, max_area_ratio=0.6),
         )
 
         self.assertEqual(result.summary["num_reliable_patches"], 16)
         self.assertGreater(result.summary["edge_summary"]["num_same_mask_edges"], 0)
         self.assertGreater(result.summary["edge_summary"]["num_cross_boundary_edges"], 0)
         self.assertEqual(result.membership.shape, (4, 4))
+
+    def test_top_k_selection_keeps_best_after_hard_filter(self) -> None:
+        scores = [
+            {
+                "candidate_id": "huge",
+                "node_type": "low_reliability_candidate",
+                "reliability": 10.0,
+                "area_ratio": 0.9,
+                "max_prototype_similarity": 1.0,
+            },
+            {
+                "candidate_id": "best",
+                "node_type": "low_reliability_candidate",
+                "reliability": 0.2,
+                "area_ratio": 0.1,
+                "max_prototype_similarity": 0.9,
+            },
+            {
+                "candidate_id": "second",
+                "node_type": "small_detail",
+                "reliability": 0.01,
+                "area_ratio": 0.002,
+                "max_prototype_similarity": 0.7,
+            },
+        ]
+
+        selected, debug = select_reliable_candidate_ids(
+            scores,
+            config=PatchGraphConfig(reliable_selection_mode="top_k", top_k_reliable_masks=2, max_area_ratio=0.3),
+        )
+
+        self.assertNotIn("huge", selected)
+        self.assertEqual(selected, {"best", "second"})
+        self.assertEqual(debug["num_selected"], 2)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from stage1_adapter.patch_graph import (
     PatchGraphProbeResult,
     build_reliable_patch_membership,
     run_masked_patch_prototype_probe,
+    select_reliable_candidate_ids,
     summarize_patch_edges,
 )
 from stage1_adapter.prototypes import (
@@ -25,6 +26,7 @@ __all__ = [
     "describe_candidate_masks",
     "run_masked_patch_prototype_probe",
     "score_candidate_against_prototypes",
+    "select_reliable_candidate_ids",
     "summarize_patch_edges",
     "summarize_adapter_scores",
 ]

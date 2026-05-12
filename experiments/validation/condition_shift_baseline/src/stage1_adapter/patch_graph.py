@@ -21,8 +21,13 @@ from stage1_adapter.prototypes import ComponentPrototype
 class PatchGraphConfig:
     """Configuration for reliable mask gating and local patch prediction."""
 
+    reliable_selection_mode: str = "top_k"
+    top_k_reliable_masks: int = 8
     min_reliability: float = 0.35
     valid_node_types: tuple[str, ...] = ("valid_component", "small_detail")
+    hard_excluded_node_types: tuple[str, ...] = ("invalid_supermask", "invalid_fragment")
+    max_area_ratio: float = 0.30
+    min_area_ratio: float = 0.001
     same_mask_bonus: float = 1.0
     cross_boundary_weight: float = 0.25
     unlabeled_neighbor_weight: float = 0.5
@@ -63,6 +68,7 @@ def build_reliable_patch_membership(
     """
     cfg = config or PatchGraphConfig()
     score_by_id = {str(score.get("candidate_id")): score for score in candidate_scores}
+    selected_ids, selection_debug = select_reliable_candidate_ids(candidate_scores, config=cfg)
     membership = np.full(feature_shape, -1, dtype=np.int32)
     reliability_map = np.zeros(feature_shape, dtype=np.float32)
     reliable_records: list[dict[str, Any]] = []
@@ -73,7 +79,7 @@ def build_reliable_patch_membership(
     for raw_index, raw_mask in sorted_masks:
         mask_id = _mask_id(raw_mask, raw_index)
         score = score_by_id.get(mask_id)
-        if score is None or not _is_reliable_score(score, cfg):
+        if score is None or mask_id not in selected_ids:
             continue
         patch_mask = _resize_mask(np.asarray(raw_mask["mask"], dtype=bool), feature_shape)
         reliability = float(score.get("reliability", 0.0))
@@ -97,8 +103,39 @@ def build_reliable_patch_membership(
         "num_raw_masks": len(raw_masks),
         "num_reliable_masks": len(reliable_records),
         "reliable_records": reliable_records,
+        "selection": selection_debug,
     }
     return membership, reliability_map, debug
+
+
+def select_reliable_candidate_ids(
+    candidate_scores: list[dict[str, Any]],
+    *,
+    config: PatchGraphConfig | None = None,
+) -> tuple[set[str], dict[str, Any]]:
+    """Select mask ids using hard invalid filtering followed by threshold/top-k."""
+    cfg = config or PatchGraphConfig()
+    candidates = [score for score in candidate_scores if _passes_hard_filter(score, cfg)]
+    if cfg.reliable_selection_mode == "threshold":
+        selected = [
+            score
+            for score in candidates
+            if str(score.get("node_type")) in set(cfg.valid_node_types)
+            and float(score.get("reliability", 0.0)) >= cfg.min_reliability
+        ]
+    elif cfg.reliable_selection_mode == "top_k":
+        selected = sorted(candidates, key=_candidate_rank_key, reverse=True)[: max(0, int(cfg.top_k_reliable_masks))]
+    else:
+        raise ValueError(f"unsupported reliable_selection_mode: {cfg.reliable_selection_mode}")
+    selected_ids = {str(score.get("candidate_id")) for score in selected}
+    debug = {
+        "mode": cfg.reliable_selection_mode,
+        "num_input_scores": len(candidate_scores),
+        "num_after_hard_filter": len(candidates),
+        "num_selected": len(selected_ids),
+        "selected_candidate_ids": sorted(selected_ids),
+    }
+    return selected_ids, debug
 
 
 def assign_patch_prototypes(
@@ -237,10 +274,23 @@ def summarize_patch_edges(membership: np.ndarray) -> dict[str, int]:
     return counts
 
 
-def _is_reliable_score(score: dict[str, Any], config: PatchGraphConfig) -> bool:
+def _passes_hard_filter(score: dict[str, Any], config: PatchGraphConfig) -> bool:
+    node_type = str(score.get("node_type"))
+    area_ratio = float(score.get("area_ratio", 0.0))
     return (
-        str(score.get("node_type")) in set(config.valid_node_types)
-        and float(score.get("reliability", 0.0)) >= config.min_reliability
+        node_type not in set(config.hard_excluded_node_types)
+        and area_ratio <= float(config.max_area_ratio)
+        and area_ratio >= float(config.min_area_ratio)
+    )
+
+
+def _candidate_rank_key(score: dict[str, Any]) -> tuple[float, float, float]:
+    node_type = str(score.get("node_type"))
+    node_bonus = 1.0 if node_type == "valid_component" else 0.5 if node_type == "small_detail" else 0.0
+    return (
+        node_bonus,
+        float(score.get("reliability", 0.0)),
+        float(score.get("max_prototype_similarity", 0.0)),
     )
 
 
