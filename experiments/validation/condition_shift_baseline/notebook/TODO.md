@@ -3,6 +3,35 @@
 - [x] Log, str 따로 보기
 - [x] Response/anomaly heatmap gallery 추가
 - [x] 04 relation probe 스캐폴딩
+- [ ] LOCO GT / defect semantics EDA
+  - [ ] category별 train/good, validation/good, test/good, test/logical_anomalies, test/structural_anomalies 개수 확인
+  - [ ] logical / structural 각각 ground_truth mask 존재 여부 확인
+  - [ ] anomaly image 1장당 GT mask 파일 수와 pixel value 수 확인
+  - [ ] logical GT mask가 실제로 무엇을 칠하는지 시각화
+  - [ ] `defects_config.json` 기반 defect_name / pixel_value mapping table 생성
+  - [ ] defect를 count / missing / swapped-layout / contamination-damage / local appearance로 재분류
+  - [ ] defect type별 GT mask area 분포 확인
+  - [ ] segmentation 필요 anomaly와 component/graph 중심 anomaly 구분
+- [ ] 평가 지표 재정리
+  - [ ] GT mask 기준 pixel AUROC / PRO / IoU 가능 여부 확인
+  - [ ] component proposal과 GT mask overlap 확인
+  - [ ] normalized component count stability, matched component ratio, graph node stability 확인
+  - [ ] relation score stability와 logical anomaly score decomposition 비교
+- [ ] Stage 1 평가 metric 실행
+  - [ ] raw support: foreground IoU, coverage ratio, raw label count delta
+  - [ ] normalized proposal stability: normalized count delta, thing/stuff/small count delta, compression ratio
+  - [ ] proposal validity: large mask leakage, fragment leakage, max area ratio, stuff cluster rate
+  - [ ] GT coverage: gt coverage by proposals, best proposal IoU, overlapping proposal count, GT area ratio
+  - [ ] defect group별 missing/count, composition/ratio, layout/relation, local damage 분석
+- [ ] segmentation 필요성 재검토
+  - [ ] pixel-perfect segmentation이 필요한 anomaly type 분리
+  - [ ] component proposal만으로 충분한 anomaly type 분리
+  - [ ] graph relation이 필요한 anomaly type 분리
+- [ ] ablation 설계
+  - [ ] mask-only normalization baseline
+  - [ ] mask normalization + DINO descriptor
+  - [ ] DINO-SAM teacher smoothing
+  - [ ] 추가 모듈별 실제 이득 비교
 - [ ] Known-transform relation sanity check 실행
 - [ ] Relation score vs PatchCore/UniVAD score 비교
 - [ ] Query-side component matching 설계
