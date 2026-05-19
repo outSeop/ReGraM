@@ -17,7 +17,7 @@ class MatchingConfig:
 
     assignment_mode: str = "top_k"
     top_k_prototypes: int = 3
-    min_assignment_similarity: float | None = None
+    min_assignment_similarity: float | None = 0.5
     soft_assign_quantile: float = 0.20
     ot_reg: float = 0.05
     ot_marginal_penalty: float = 1.0
@@ -41,6 +41,7 @@ class PrototypeMatchingResult:
     unmatched_query_mass: float
     unmatched_memory_mass: float
     matched_instance_count: int
+    matched_instance_count_per_image: float
     expected_instance_count: float
     instance_count_diff: float
     matched_extent: np.ndarray | None
@@ -57,6 +58,7 @@ class PrototypeMatchingResult:
             "unmatched_query_mass": float(self.unmatched_query_mass),
             "unmatched_memory_mass": float(self.unmatched_memory_mass),
             "matched_instance_count": int(self.matched_instance_count),
+            "matched_instance_count_per_image": float(self.matched_instance_count_per_image),
             "expected_instance_count": float(self.expected_instance_count),
             "instance_count_diff": float(self.instance_count_diff),
             "matched_extent": None if self.matched_extent is None else self.matched_extent.astype(float).tolist(),
@@ -126,6 +128,7 @@ def match_query_against_memory(
         prototype = memory.prototypes[prototype_id]
         threshold = assignment_debug["thresholds"].get(prototype_id)
         active_mask = active_by_prototype[:, proto_index]
+        num_occurring_images = _num_occurring_images(prototype)
         if not np.any(active_mask):
             per_prototype[prototype_id] = PrototypeMatchingResult(
                 prototype_id=prototype_id,
@@ -135,6 +138,7 @@ def match_query_against_memory(
                 unmatched_query_mass=0.0,
                 unmatched_memory_mass=1.0,
                 matched_instance_count=0,
+                matched_instance_count_per_image=0.0,
                 expected_instance_count=float(prototype.expected_instance_count),
                 instance_count_diff=float(abs(prototype.expected_instance_count)),
                 matched_extent=None,
@@ -144,6 +148,7 @@ def match_query_against_memory(
                     "assignment_mode": config.assignment_mode,
                     "top_k_prototypes": int(config.top_k_prototypes),
                     "threshold": None if threshold is None else float(threshold),
+                    "num_occurring_images": num_occurring_images,
                     "reason": "no_active_query_patches",
                 },
             )
@@ -170,6 +175,7 @@ def match_query_against_memory(
         matched_instance_count = int(
             sum(value > config.min_matched_mass_for_instance for value in per_instance_ratio.values())
         )
+        matched_instance_count_per_image = matched_instance_count / max(float(num_occurring_images), 1.0)
         if float(marginal_q.sum()) > config.eps:
             matched_extent = (q_positions * marginal_q[:, None]).sum(axis=0) / max(float(marginal_q.sum()), config.eps)
         else:
@@ -182,8 +188,9 @@ def match_query_against_memory(
             unmatched_query_mass=max(0.0, 1.0 - plan_mass),
             unmatched_memory_mass=max(0.0, 1.0 - plan_mass),
             matched_instance_count=matched_instance_count,
+            matched_instance_count_per_image=float(matched_instance_count_per_image),
             expected_instance_count=float(prototype.expected_instance_count),
-            instance_count_diff=float(abs(matched_instance_count - prototype.expected_instance_count)),
+            instance_count_diff=float(abs(matched_instance_count_per_image - prototype.expected_instance_count)),
             matched_extent=matched_extent,
             transport_plan=plan.astype(np.float32),
             debug={
@@ -191,7 +198,9 @@ def match_query_against_memory(
                 "assignment_mode": config.assignment_mode,
                 "top_k_prototypes": int(config.top_k_prototypes),
                 "threshold": None if threshold is None else float(threshold),
+                "num_occurring_images": num_occurring_images,
                 "plan_mass": plan_mass,
+                "matched_extent_weighting": "ot_query_marginal",
                 "per_instance_mass_ratio": per_instance_ratio,
             },
         )
@@ -395,6 +404,10 @@ def _prototype_threshold(quantiles: dict[float, float], quantile: float) -> floa
 
 def _prototype_patch_count(prototype: Any) -> int:
     return int(sum(len(instance.patch_features) for instance in prototype.instances))
+
+
+def _num_occurring_images(prototype: Any) -> int:
+    return int(len({instance.source_image_id for instance in prototype.instances}))
 
 
 def _cosine_matrix(left: np.ndarray, right: np.ndarray) -> np.ndarray:

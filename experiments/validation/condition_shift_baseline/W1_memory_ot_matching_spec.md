@@ -62,7 +62,8 @@ inference:
        signal_1[p] = mass(Q_p) - matched_mass_to_M_p(plan)
        signal_2[p] = mass(M_p) - matched_mass_to_Q_p(plan)
        matched_instance_count[p] = # of memory instances with received_mass > min_matched_mass
-       signal_3[p] = |expected_instance_count[p] - matched_instance_count[p]|
+       matched_per_image[p] = matched_instance_count[p] / num_occurring_images[p]
+       signal_3[p] = |expected_instance_count[p] - matched_per_image[p]|
        matched_extent[p] = weighted_centroid(query_positions, plan)
 
   3. spatial constraint:
@@ -238,7 +239,7 @@ def build_memory_bank(
 class MatchingConfig:
     assignment_mode: str = "top_k"           # "top_k" default, "threshold" ablation
     top_k_prototypes: int = 3                # each query patch activates top-k prototypes
-    min_assignment_similarity: float | None = None
+    min_assignment_similarity: float | None = 0.5  # top-k safety gate for weak prototypes
     soft_assign_quantile: float = 0.20       # only used when assignment_mode="threshold"
     ot_reg: float = 0.05                     # Sinkhorn ε
     ot_marginal_penalty: float = 1.0         # unbalanced reg_m (KL marginal)
@@ -253,8 +254,9 @@ class PrototypeMatchingResult:
     matching_cost: float
     unmatched_query_mass: float       # signal_1 contribution
     unmatched_memory_mass: float      # signal_2 contribution
-    matched_instance_count: int
-    expected_instance_count: float
+    matched_instance_count: int          # total matched memory instances
+    matched_instance_count_per_image: float # matched count normalized by clean occurrence images
+    expected_instance_count: float          # expected count per occurring clean image
     instance_count_diff: float        # signal_3 contribution
     matched_extent: np.ndarray | None # (2,), None if query_mass too small
     transport_plan: np.ndarray        # (n_query_p, n_memory_p), debug용
@@ -326,8 +328,9 @@ def match_query_against_memory(
          per_instance_mass = group_sum_by(marginal_M, M_p_instance_ids)
          matched_instance_count = sum(1 for inst, m in per_instance_mass.items()
                                        if m > config.min_matched_mass_for_instance)
+         matched_per_image = matched_instance_count / num_occurring_images[p]
          expected = memory.prototypes[p].expected_instance_count
-         instance_count_diff = abs(matched_instance_count - expected)
+         instance_count_diff = abs(matched_per_image - expected)
 
          # Matched extent: weighted centroid of query positions
          if marginal_Q.sum() > 0:
@@ -412,7 +415,7 @@ checks = {
 
 - `signal_1 > 0.20`: top-k active patch가 OT에서 memory로 충분히 transport되지 않음 → OT marginal penalty/cost scale 확인. threshold ablation에서는 τ_p가 너무 strict할 수도 있음
 - `signal_2 > 0.20`: memory의 너무 많은 patch가 query에서 매칭 안 됨 → ot_marginal_penalty 너무 strict, 또는 memory와 query 통계가 너무 다름
-- `signal_3 > 0.5`: instance count 매칭 실패 → min_matched_mass_for_instance threshold 조정
+- `signal_3 > 0.5`: per-image instance count 매칭 실패 → min_matched_mass_for_instance 또는 weak prototype assignment 확인
 - `signal_4 > 3.0`: spatial constraint 위배 → spatial_graph cov 추정 noisy (instance pair 수 부족), 또는 query patch 위치가 실제로 어긋남
 
 ---
