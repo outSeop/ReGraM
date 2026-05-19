@@ -67,9 +67,13 @@ inference:
        matched_extent[p] = weighted_centroid(query_positions, plan)
 
   3. spatial constraint:
-       for (p_i, p_j) in spatial_graph:
+       for (p_i, p_j) in spatial_graph required-role subset:
          observed_delta = matched_extent[p_j] - matched_extent[p_i]
-         signal_4[(p_i, p_j)] = mahalanobis(observed_delta, spatial_graph[(p_i, p_j)])
+         raw_error = || observed_delta - spatial_graph[(p_i, p_j)].delta_pos_mean ||_2
+         signal_4[(p_i, p_j)] = min(
+             raw_error / (edge_tolerance + ||delta_pos_mean||_2),
+             edge_cap,
+         )
 
   4. aggregate:
        anomaly_score = Σ_p (signal_1[p] + signal_2[p] + signal_3[p])
@@ -245,6 +249,13 @@ class MatchingConfig:
     ot_marginal_penalty: float = 1.0         # unbalanced reg_m (KL marginal)
     min_matched_mass_for_instance: float = 0.5  # mass threshold to count instance as "present"
     skip_signal_4_if_no_extent: bool = True  # prototype 매칭 mass 너무 작으면 signal_4 skip
+    spatial_signal_mode: str = "clipped_l2"   # "clipped_l2" default, "mahalanobis" ablation
+    spatial_min_occurrence_rate: float = 0.8  # required role filter for signal_4
+    spatial_min_expected_count: float = 0.7
+    spatial_max_expected_count: float = 1.3   # multi-instance roles go to count/coverage prior first
+    spatial_min_edge_pairs: int = 5
+    spatial_edge_tolerance: float = 0.05
+    spatial_edge_cap: float = 3.0
 
 @dataclass
 class PrototypeMatchingResult:
@@ -342,6 +353,10 @@ def match_query_against_memory(
 
       3. Spatial violations:
          for (p_i, p_j), edge in memory.spatial_graph.items():
+           if either prototype is not a required role:
+               continue
+           if edge.num_pairs < config.spatial_min_edge_pairs:
+               continue
            e_i = per_prototype[p_i].matched_extent
            e_j = per_prototype[p_j].matched_extent
            if e_i is None or e_j is None:
@@ -350,10 +365,14 @@ def match_query_against_memory(
                else:
                    record large penalty (e.g., 10.0)
            observed_delta = e_j - e_i
-           cov_inv = np.linalg.pinv(edge.delta_pos_cov + 1e-6 * I)
            diff = observed_delta - edge.delta_pos_mean
-           mahal = sqrt(diff @ cov_inv @ diff)
-           spatial_violations[(p_i, p_j)] = mahal
+           if config.spatial_signal_mode == "clipped_l2":
+               edge_error = ||diff||_2 / (config.spatial_edge_tolerance + ||edge.delta_pos_mean||_2)
+               spatial_violations[(p_i, p_j)] = min(edge_error, config.spatial_edge_cap)
+           else:
+               cov_inv = np.linalg.pinv(edge.delta_pos_cov + 1e-6 * I)
+               mahal = sqrt(diff @ cov_inv @ diff)
+               spatial_violations[(p_i, p_j)] = mahal
 
       4. Sum signals and return AnomalyDecomposition.
     """
@@ -363,6 +382,8 @@ def match_query_against_memory(
 
 - **Cost function**: cosine distance (1 - cosine sim). DINO feature는 일반적으로 cosine geometry에서 잘 동작.
 - **Weight normalization**: Q_p와 M_p의 weight를 각각 합 1로 normalize. unbalanced OT는 mass 차이를 marginal penalty로 처리.
+- **Signal 4 default**: W1에서는 Mahalanobis를 잠시 빼고 required-role clipped normalized L2를 사용. covariance 추정이 안정된 뒤 W4/W5에서 Mahalanobis를 ablation으로 재투입.
+- **Required role edge filter**: `occurrence_rate >= 0.8`, `0.7 <= expected_instance_count <= 1.3`, `edge.num_pairs >= 5`. 낮은 occurrence role과 multi-instance role은 signal_4가 아니라 signal_3/count/coverage prior에서 먼저 처리.
 - **Empty Q_p 처리**: 한 prototype에 query patch가 하나도 active하지 않으면 → 전체 memory_mass가 signal_2에 전부 들어감, signal_1 contribution 0, matched_extent None.
 - **Empty extent 처리**: signal_4 계산 시 한쪽 prototype의 extent가 None이면 skip (W1 default). 나중에 missing prototype을 별도 anomaly로 가중치 부여 가능.
 
@@ -416,7 +437,7 @@ checks = {
 - `signal_1 > 0.20`: top-k active patch가 OT에서 memory로 충분히 transport되지 않음 → OT marginal penalty/cost scale 확인. threshold ablation에서는 τ_p가 너무 strict할 수도 있음
 - `signal_2 > 0.20`: memory의 너무 많은 patch가 query에서 매칭 안 됨 → ot_marginal_penalty 너무 strict, 또는 memory와 query 통계가 너무 다름
 - `signal_3 > 0.5`: per-image instance count 매칭 실패 → min_matched_mass_for_instance 또는 weak prototype assignment 확인
-- `signal_4 > 3.0`: spatial constraint 위배 → spatial_graph cov 추정 noisy (instance pair 수 부족), 또는 query patch 위치가 실제로 어긋남
+- `signal_4 > 3.0`: required-role spatial constraint 위배 → edge tolerance가 너무 좁거나 matched_extent가 support 밖으로 튐. 먼저 matched_extent / edge violation map을 확인하고, low-occurrence/multi-instance role이 edge prior에 들어갔는지 확인.
 
 ---
 

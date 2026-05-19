@@ -24,6 +24,13 @@ class MatchingConfig:
     min_matched_mass_for_instance: float = 0.5
     skip_signal_4_if_no_extent: bool = True
     empty_extent_penalty: float = 10.0
+    spatial_signal_mode: str = "clipped_l2"
+    spatial_min_occurrence_rate: float = 0.8
+    spatial_min_expected_count: float = 0.7
+    spatial_max_expected_count: float = 1.3
+    spatial_min_edge_pairs: int = 5
+    spatial_edge_tolerance: float = 0.05
+    spatial_edge_cap: float = 3.0
     eps: float = 1e-8
 
     def to_dict(self) -> dict[str, Any]:
@@ -205,7 +212,7 @@ def match_query_against_memory(
             },
         )
 
-    spatial_violations = _spatial_violations(memory, per_prototype, config=config)
+    spatial_violations, spatial_debug = _spatial_violations(memory, per_prototype, config=config)
     signal_1 = float(sum(result.unmatched_query_mass for result in per_prototype.values()))
     signal_2 = float(sum(result.unmatched_memory_mass for result in per_prototype.values()))
     signal_3 = float(sum(result.instance_count_diff for result in per_prototype.values()))
@@ -223,6 +230,7 @@ def match_query_against_memory(
             "num_query_patches": int(len(query_features)),
             "num_prototypes": len(memory.prototypes),
             "assignment": assignment_debug,
+            "spatial": spatial_debug,
             "matching_config": config.to_dict(),
         },
     )
@@ -372,9 +380,25 @@ def _spatial_violations(
     per_prototype: dict[str, PrototypeMatchingResult],
     *,
     config: MatchingConfig,
-) -> dict[tuple[str, str], float]:
+) -> tuple[dict[tuple[str, str], float], dict[str, Any]]:
     violations = {}
+    skipped_edges: list[dict[str, Any]] = []
+    skipped_by_reason: dict[str, int] = {}
+    eligible_edges = 0
     for pair, edge in memory.spatial_graph.items():
+        eligible, reason = _edge_is_required_role(memory, pair, edge, config=config)
+        if not eligible:
+            skipped_edges.append(
+                {
+                    "prototype_i": pair[0],
+                    "prototype_j": pair[1],
+                    "reason": reason,
+                    "num_edge_pairs": int(edge.num_pairs),
+                }
+            )
+            skipped_by_reason[reason] = skipped_by_reason.get(reason, 0) + 1
+            continue
+        eligible_edges += 1
         left = per_prototype.get(pair[0])
         right = per_prototype.get(pair[1])
         left_extent = None if left is None else left.matched_extent
@@ -382,13 +406,70 @@ def _spatial_violations(
         if left_extent is None or right_extent is None:
             if not config.skip_signal_4_if_no_extent:
                 violations[pair] = float(config.empty_extent_penalty)
+            skipped_edges.append(
+                {
+                    "prototype_i": pair[0],
+                    "prototype_j": pair[1],
+                    "reason": "missing_matched_extent",
+                    "num_edge_pairs": int(edge.num_pairs),
+                }
+            )
+            skipped_by_reason["missing_matched_extent"] = skipped_by_reason.get("missing_matched_extent", 0) + 1
             continue
         observed = right_extent - left_extent
         diff = observed - edge.delta_pos_mean
-        cov = edge.delta_pos_cov + np.eye(2, dtype=np.float32) * 1e-6
-        cov_inv = np.linalg.pinv(cov)
-        violations[pair] = float(sqrt(max(float(diff.T @ cov_inv @ diff), 0.0)))
-    return violations
+        if config.spatial_signal_mode == "mahalanobis":
+            cov = edge.delta_pos_cov + np.eye(2, dtype=np.float32) * 1e-6
+            cov_inv = np.linalg.pinv(cov)
+            violations[pair] = float(sqrt(max(float(diff.T @ cov_inv @ diff), 0.0)))
+        elif config.spatial_signal_mode == "clipped_l2":
+            memory_edge_length = float(np.linalg.norm(edge.delta_pos_mean))
+            raw_error = float(np.linalg.norm(diff))
+            normalized_error = raw_error / max(
+                float(config.spatial_edge_tolerance) + memory_edge_length,
+                float(config.eps),
+            )
+            violations[pair] = float(min(normalized_error, float(config.spatial_edge_cap)))
+        else:
+            raise ValueError(f"unsupported spatial_signal_mode: {config.spatial_signal_mode}")
+    debug = {
+        "spatial_signal_mode": config.spatial_signal_mode,
+        "num_memory_edges": len(memory.spatial_graph),
+        "num_required_role_edges": eligible_edges,
+        "num_scored_edges": len(violations),
+        "num_skipped_edges": len(skipped_edges),
+        "skipped_by_reason": skipped_by_reason,
+        "skipped_edges": skipped_edges,
+        "required_role_filter": {
+            "min_occurrence_rate": float(config.spatial_min_occurrence_rate),
+            "min_expected_count": float(config.spatial_min_expected_count),
+            "max_expected_count": float(config.spatial_max_expected_count),
+            "min_edge_pairs": int(config.spatial_min_edge_pairs),
+        },
+    }
+    return violations, debug
+
+
+def _edge_is_required_role(
+    memory: MemoryBank,
+    pair: tuple[str, str],
+    edge: Any,
+    *,
+    config: MatchingConfig,
+) -> tuple[bool, str]:
+    if int(edge.num_pairs) < int(config.spatial_min_edge_pairs):
+        return False, "too_few_edge_pairs"
+    left = memory.prototypes[pair[0]]
+    right = memory.prototypes[pair[1]]
+    for prototype in (left, right):
+        if float(prototype.occurrence_rate) < float(config.spatial_min_occurrence_rate):
+            return False, "low_occurrence_role"
+        expected_count = float(prototype.expected_instance_count)
+        if expected_count < float(config.spatial_min_expected_count):
+            return False, "low_expected_count_role"
+        if expected_count > float(config.spatial_max_expected_count):
+            return False, "multi_instance_role"
+    return True, "required_role_edge"
 
 
 def _prototype_threshold(quantiles: dict[float, float], quantile: float) -> float:
