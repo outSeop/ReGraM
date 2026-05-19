@@ -50,8 +50,9 @@ query:
 inference:
   1. soft assignment:
        sim[i, p] = cosine(query_patch_i, prototype_centroid[p])
-       τ_p = quantile(within-cluster similarity distribution, soft_assign_quantile)
-       active(i, p) = (sim[i, p] > τ_p)
+       default: active(i, p) = p is in top-k prototypes for query_patch_i (k=3)
+       optional ablation: τ_p = quantile(within-cluster similarity distribution, soft_assign_quantile)
+                         active(i, p) = (sim[i, p] > τ_p)
 
   2. per prototype p:
        Q_p = query patches with active(·, p), weights = sim[·, p]
@@ -235,7 +236,10 @@ def build_memory_bank(
 ```python
 @dataclass
 class MatchingConfig:
-    soft_assign_quantile: float = 0.20       # τ_p = within_sim_quantiles[soft_assign_quantile]
+    assignment_mode: str = "top_k"           # "top_k" default, "threshold" ablation
+    top_k_prototypes: int = 3                # each query patch activates top-k prototypes
+    min_assignment_similarity: float | None = None
+    soft_assign_quantile: float = 0.20       # only used when assignment_mode="threshold"
     ot_reg: float = 0.05                     # Sinkhorn ε
     ot_marginal_penalty: float = 1.0         # unbalanced reg_m (KL marginal)
     min_matched_mass_for_instance: float = 0.5  # mass threshold to count instance as "present"
@@ -277,9 +281,15 @@ def match_query_against_memory(
       1. Compute sim[i, p] = cosine(query_patch_i, memory.prototypes[p].centroid)
          for all (i, p).
 
-      2. For each prototype p:
-         τ_p = memory.prototypes[p].within_sim_quantiles[config.soft_assign_quantile]
-         active_mask = (sim[:, p] > τ_p)
+      2. Build active assignment mask:
+         if config.assignment_mode == "top_k":
+             active(i, p) = p is in top-k prototypes for query patch i
+         else:
+             τ_p = memory.prototypes[p].within_sim_quantiles[config.soft_assign_quantile]
+             active(i, p) = (sim[i, p] > τ_p)
+
+      3. For each prototype p:
+         active_mask = active[:, p]
          if active_mask.sum() == 0:
              # nothing matches this prototype — entire memory_mass becomes unmatched
              record PrototypeMatchingResult with matched_extent=None
@@ -400,7 +410,7 @@ checks = {
 
 모든 check가 PASS면 W1 완료. FAIL 항목이 있으면 디버깅:
 
-- `signal_1 > 0.20`: query에 너무 많은 patch가 prototype 어디에도 매칭 안 됨 → τ_p 너무 strict, 또는 prototype 수 부족
+- `signal_1 > 0.20`: top-k active patch가 OT에서 memory로 충분히 transport되지 않음 → OT marginal penalty/cost scale 확인. threshold ablation에서는 τ_p가 너무 strict할 수도 있음
 - `signal_2 > 0.20`: memory의 너무 많은 patch가 query에서 매칭 안 됨 → ot_marginal_penalty 너무 strict, 또는 memory와 query 통계가 너무 다름
 - `signal_3 > 0.5`: instance count 매칭 실패 → min_matched_mass_for_instance threshold 조정
 - `signal_4 > 3.0`: spatial constraint 위배 → spatial_graph cov 추정 noisy (instance pair 수 부족), 또는 query patch 위치가 실제로 어긋남

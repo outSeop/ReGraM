@@ -15,6 +15,9 @@ from stage1_adapter.memory_bank import MemoryBank
 class MatchingConfig:
     """Configuration for memory-anchored OT matching."""
 
+    assignment_mode: str = "top_k"
+    top_k_prototypes: int = 3
+    min_assignment_similarity: float | None = None
     soft_assign_quantile: float = 0.20
     ot_reg: float = 0.05
     ot_marginal_penalty: float = 1.0
@@ -111,12 +114,18 @@ def match_query_against_memory(
     prototype_ids = list(memory.prototypes)
     centroids = np.stack([memory.prototypes[pid].centroid for pid in prototype_ids], axis=0)
     similarities = _cosine_matrix(query_features, centroids)
+    active_by_prototype, assignment_debug = _active_assignment_mask(
+        similarities,
+        prototype_ids=prototype_ids,
+        memory=memory,
+        config=config,
+    )
 
     per_prototype: dict[str, PrototypeMatchingResult] = {}
     for proto_index, prototype_id in enumerate(prototype_ids):
         prototype = memory.prototypes[prototype_id]
-        threshold = _prototype_threshold(prototype.within_sim_quantiles, config.soft_assign_quantile)
-        active_mask = similarities[:, proto_index] > threshold
+        threshold = assignment_debug["thresholds"].get(prototype_id)
+        active_mask = active_by_prototype[:, proto_index]
         if not np.any(active_mask):
             per_prototype[prototype_id] = PrototypeMatchingResult(
                 prototype_id=prototype_id,
@@ -132,7 +141,9 @@ def match_query_against_memory(
                 transport_plan=np.zeros((0, _prototype_patch_count(prototype)), dtype=np.float32),
                 debug={
                     "active_patch_count": 0,
-                    "threshold": float(threshold),
+                    "assignment_mode": config.assignment_mode,
+                    "top_k_prototypes": int(config.top_k_prototypes),
+                    "threshold": None if threshold is None else float(threshold),
                     "reason": "no_active_query_patches",
                 },
             )
@@ -177,7 +188,9 @@ def match_query_against_memory(
             transport_plan=plan.astype(np.float32),
             debug={
                 "active_patch_count": int(active_mask.sum()),
-                "threshold": float(threshold),
+                "assignment_mode": config.assignment_mode,
+                "top_k_prototypes": int(config.top_k_prototypes),
+                "threshold": None if threshold is None else float(threshold),
                 "plan_mass": plan_mass,
                 "per_instance_mass_ratio": per_instance_ratio,
             },
@@ -200,6 +213,7 @@ def match_query_against_memory(
         debug={
             "num_query_patches": int(len(query_features)),
             "num_prototypes": len(memory.prototypes),
+            "assignment": assignment_debug,
             "matching_config": config.to_dict(),
         },
     )
@@ -232,6 +246,24 @@ def decomposition_summary(result: AnomalyDecomposition) -> dict[str, Any]:
     }
 
 
+def active_assignment_mask(
+    query_patch_features: np.ndarray,
+    prototype_centroids: np.ndarray,
+    prototype_ids: list[str],
+    memory: MemoryBank,
+    config: MatchingConfig,
+) -> np.ndarray:
+    """Return query-patch/prototype active assignment mask for visualization."""
+    similarities = _cosine_matrix(query_patch_features, prototype_centroids)
+    active, _ = _active_assignment_mask(
+        similarities,
+        prototype_ids=prototype_ids,
+        memory=memory,
+        config=config,
+    )
+    return active
+
+
 def _sinkhorn_unbalanced(a: np.ndarray, b: np.ndarray, cost: np.ndarray, *, config: MatchingConfig) -> np.ndarray:
     try:
         import ot  # type: ignore  # noqa: WPS433
@@ -250,6 +282,46 @@ def _sinkhorn_unbalanced(a: np.ndarray, b: np.ndarray, cost: np.ndarray, *, conf
         raise ModuleNotFoundError(
             "POT is required for W1 memory OT matching. Install with `pip install pot`."
         ) from exc
+
+
+def _active_assignment_mask(
+    similarities: np.ndarray,
+    *,
+    prototype_ids: list[str],
+    memory: MemoryBank,
+    config: MatchingConfig,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    if config.assignment_mode == "threshold":
+        active = np.zeros_like(similarities, dtype=bool)
+        thresholds = {}
+        for proto_index, prototype_id in enumerate(prototype_ids):
+            threshold = _prototype_threshold(
+                memory.prototypes[prototype_id].within_sim_quantiles,
+                config.soft_assign_quantile,
+            )
+            thresholds[prototype_id] = float(threshold)
+            active[:, proto_index] = similarities[:, proto_index] > threshold
+        return active, {
+            "assignment_mode": config.assignment_mode,
+            "thresholds": thresholds,
+            "top_k_prototypes": None,
+        }
+    if config.assignment_mode == "top_k":
+        k = max(1, min(int(config.top_k_prototypes), similarities.shape[1]))
+        active = np.zeros_like(similarities, dtype=bool)
+        top_indices = np.argsort(-similarities, axis=1)[:, :k]
+        row_indices = np.arange(similarities.shape[0])[:, None]
+        active[row_indices, top_indices] = True
+        if config.min_assignment_similarity is not None:
+            active &= similarities >= float(config.min_assignment_similarity)
+        return active, {
+            "assignment_mode": config.assignment_mode,
+            "thresholds": {prototype_id: None for prototype_id in prototype_ids},
+            "top_k_prototypes": k,
+            "min_assignment_similarity": config.min_assignment_similarity,
+            "active_assignments": int(active.sum()),
+        }
+    raise ValueError(f"unsupported assignment_mode: {config.assignment_mode}")
 
 
 def _memory_patch_bag(prototype: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
