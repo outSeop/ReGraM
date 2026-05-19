@@ -2,6 +2,11 @@
 
 from stage1_adapter.candidate_masks import CandidateMaskNormalizationConfig, normalize_candidate_masks
 from stage1_adapter.descriptors import CandidateDescriptor, describe_candidate_masks
+from stage1_adapter.dino_patch_matching import (
+    DinoPatchMatchResult,
+    match_dino_patch_grid,
+    summarize_dino_patch_match,
+)
 from stage1_adapter.memory_bank import (
     InstanceEntry,
     MemoryBank,
@@ -42,6 +47,7 @@ __all__ = [
     "CandidateDescriptor",
     "CandidateMaskNormalizationConfig",
     "ComponentPrototype",
+    "DinoPatchMatchResult",
     "AnomalyDecomposition",
     "InstanceEntry",
     "MatchingConfig",
@@ -58,6 +64,7 @@ __all__ = [
     "decomposition_summary",
     "describe_candidate_masks",
     "match_query_against_memory",
+    "match_dino_patch_grid",
     "memory_bank_summary",
     "normalize_candidate_masks",
     "patch_region_masks",
@@ -70,4 +77,5 @@ __all__ = [
     "summarize_patch_edges",
     "summarize_teacher_quality",
     "summarize_adapter_scores",
+    "summarize_dino_patch_match",
 ]
