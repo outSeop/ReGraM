@@ -21,6 +21,10 @@ class MatchingConfig:
     soft_assign_quantile: float = 0.20
     ot_reg: float = 0.05
     ot_marginal_penalty: float = 1.0
+    mass_normalization_mode: str = "balanced"
+    query_count_mode: str = "memory_matched"
+    query_count_similarity_threshold: float | None = None
+    query_count_min_component_patches: int = 2
     min_matched_mass_for_instance: float = 0.5
     skip_signal_4_if_no_extent: bool = True
     empty_extent_penalty: float = 10.0
@@ -120,6 +124,7 @@ def match_query_against_memory(
         raise ValueError("memory must contain at least one prototype")
     query_features = np.asarray(query_patch_features, dtype=np.float32)
     query_positions = np.asarray(query_patch_positions, dtype=np.float32)
+    total_query_patches = max(int(len(query_features)), 1)
     prototype_ids = list(memory.prototypes)
     centroids = np.stack([memory.prototypes[pid].centroid for pid in prototype_ids], axis=0)
     similarities = _cosine_matrix(query_features, centroids)
@@ -137,17 +142,27 @@ def match_query_against_memory(
         active_mask = active_by_prototype[:, proto_index]
         num_occurring_images = _num_occurring_images(prototype)
         if not np.any(active_mask):
+            memory_mass = _expected_memory_mass(
+                prototype,
+                total_query_patches=total_query_patches,
+                config=config,
+            )
+            instance_count_diff = (
+                abs(prototype.expected_instance_count)
+                if config.query_count_mode == "query_connected_components"
+                else abs(prototype.expected_instance_count)
+            )
             per_prototype[prototype_id] = PrototypeMatchingResult(
                 prototype_id=prototype_id,
                 query_mass=0.0,
-                memory_mass=1.0,
+                memory_mass=memory_mass,
                 matching_cost=0.0,
                 unmatched_query_mass=0.0,
-                unmatched_memory_mass=1.0,
+                unmatched_memory_mass=memory_mass,
                 matched_instance_count=0,
                 matched_instance_count_per_image=0.0,
                 expected_instance_count=float(prototype.expected_instance_count),
-                instance_count_diff=float(abs(prototype.expected_instance_count)),
+                instance_count_diff=float(instance_count_diff),
                 matched_extent=None,
                 transport_plan=np.zeros((0, _prototype_patch_count(prototype)), dtype=np.float32),
                 debug={
@@ -156,6 +171,9 @@ def match_query_against_memory(
                     "top_k_prototypes": int(config.top_k_prototypes),
                     "threshold": None if threshold is None else float(threshold),
                     "num_occurring_images": num_occurring_images,
+                    "mass_normalization_mode": config.mass_normalization_mode,
+                    "query_count_mode": config.query_count_mode,
+                    "query_instance_count": 0,
                     "reason": "no_active_query_patches",
                 },
             )
@@ -164,10 +182,18 @@ def match_query_against_memory(
         q_features = query_features[active_mask]
         q_positions = query_positions[active_mask]
         q_similarity = np.maximum(similarities[active_mask, proto_index], 0.0).astype(np.float64)
-        if float(q_similarity.sum()) <= config.eps:
-            q_similarity = np.ones_like(q_similarity, dtype=np.float64)
-        q_weights = q_similarity / max(float(q_similarity.sum()), config.eps)
-        m_features, m_instance_ids, m_weights, expected_instance_mass = _memory_patch_bag(prototype)
+        q_weights = _query_patch_weights(
+            q_similarity,
+            total_query_patches=total_query_patches,
+            config=config,
+        )
+        m_features, m_instance_ids, m_weights, expected_instance_mass = _memory_patch_bag(
+            prototype,
+            total_query_patches=total_query_patches,
+            config=config,
+        )
+        query_mass = float(q_weights.sum())
+        memory_mass = float(m_weights.sum())
         cost = 1.0 - _cosine_matrix(q_features, m_features)
         plan = _sinkhorn_unbalanced(q_weights, m_weights, cost, config=config)
         marginal_q = plan.sum(axis=1)
@@ -182,22 +208,37 @@ def match_query_against_memory(
         matched_instance_count = int(
             sum(value > config.min_matched_mass_for_instance for value in per_instance_ratio.values())
         )
-        matched_instance_count_per_image = matched_instance_count / max(float(num_occurring_images), 1.0)
+        if config.query_count_mode == "query_connected_components":
+            query_instance_count = _query_instance_count(
+                active_mask,
+                similarities[:, proto_index],
+                query_positions,
+                config=config,
+            )
+            matched_instance_count = int(query_instance_count)
+            matched_instance_count_per_image = float(query_instance_count)
+            instance_count_diff = float(abs(query_instance_count - prototype.expected_instance_count))
+        elif config.query_count_mode == "memory_matched":
+            query_instance_count = None
+            matched_instance_count_per_image = matched_instance_count / max(float(num_occurring_images), 1.0)
+            instance_count_diff = float(abs(matched_instance_count_per_image - prototype.expected_instance_count))
+        else:
+            raise ValueError(f"unsupported query_count_mode: {config.query_count_mode}")
         if float(marginal_q.sum()) > config.eps:
             matched_extent = (q_positions * marginal_q[:, None]).sum(axis=0) / max(float(marginal_q.sum()), config.eps)
         else:
             matched_extent = None
         per_prototype[prototype_id] = PrototypeMatchingResult(
             prototype_id=prototype_id,
-            query_mass=1.0,
-            memory_mass=1.0,
+            query_mass=query_mass,
+            memory_mass=memory_mass,
             matching_cost=matching_cost,
-            unmatched_query_mass=max(0.0, 1.0 - plan_mass),
-            unmatched_memory_mass=max(0.0, 1.0 - plan_mass),
+            unmatched_query_mass=max(0.0, query_mass - plan_mass),
+            unmatched_memory_mass=max(0.0, memory_mass - plan_mass),
             matched_instance_count=matched_instance_count,
             matched_instance_count_per_image=float(matched_instance_count_per_image),
             expected_instance_count=float(prototype.expected_instance_count),
-            instance_count_diff=float(abs(matched_instance_count_per_image - prototype.expected_instance_count)),
+            instance_count_diff=instance_count_diff,
             matched_extent=matched_extent,
             transport_plan=plan.astype(np.float32),
             debug={
@@ -206,6 +247,9 @@ def match_query_against_memory(
                 "top_k_prototypes": int(config.top_k_prototypes),
                 "threshold": None if threshold is None else float(threshold),
                 "num_occurring_images": num_occurring_images,
+                "mass_normalization_mode": config.mass_normalization_mode,
+                "query_count_mode": config.query_count_mode,
+                "query_instance_count": None if query_instance_count is None else int(query_instance_count),
                 "plan_mass": plan_mass,
                 "matched_extent_weighting": "ot_query_marginal",
                 "per_instance_mass_ratio": per_instance_ratio,
@@ -341,23 +385,133 @@ def _active_assignment_mask(
     raise ValueError(f"unsupported assignment_mode: {config.assignment_mode}")
 
 
-def _memory_patch_bag(prototype: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
+def _query_patch_weights(
+    q_similarity: np.ndarray,
+    *,
+    total_query_patches: int,
+    config: MatchingConfig,
+) -> np.ndarray:
+    """Build query-side OT mass without always forcing unit prototype mass."""
+    if config.mass_normalization_mode == "balanced":
+        if float(q_similarity.sum()) <= config.eps:
+            q_similarity = np.ones_like(q_similarity, dtype=np.float64)
+        return q_similarity / max(float(q_similarity.sum()), config.eps)
+    if config.mass_normalization_mode == "area":
+        weights = q_similarity.astype(np.float64) / max(float(total_query_patches), 1.0)
+        if float(weights.sum()) <= config.eps:
+            weights = np.ones_like(q_similarity, dtype=np.float64) / max(float(total_query_patches), 1.0)
+        return weights
+    raise ValueError(f"unsupported mass_normalization_mode: {config.mass_normalization_mode}")
+
+
+def _memory_patch_bag(
+    prototype: Any,
+    *,
+    total_query_patches: int,
+    config: MatchingConfig,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
     features = []
     instance_ids = []
     weights = []
     expected_instance_mass = {}
     num_instances = max(len(prototype.instances), 1)
+    num_occurring_images = max(_num_occurring_images(prototype), 1)
     for instance in prototype.instances:
         patch_count = max(len(instance.patch_features), 1)
         features.append(instance.patch_features)
         instance_ids.extend([instance.instance_id] * patch_count)
-        per_patch_weight = 1.0 / (num_instances * patch_count)
+        if config.mass_normalization_mode == "balanced":
+            instance_mass = 1.0 / num_instances
+        elif config.mass_normalization_mode == "area":
+            instance_mass = patch_count / max(float(total_query_patches * num_occurring_images), 1.0)
+        else:
+            raise ValueError(f"unsupported mass_normalization_mode: {config.mass_normalization_mode}")
+        per_patch_weight = instance_mass / patch_count
         weights.extend([per_patch_weight] * patch_count)
-        expected_instance_mass[instance.instance_id] = 1.0 / num_instances
+        expected_instance_mass[instance.instance_id] = float(instance_mass)
     feature_array = np.concatenate(features, axis=0).astype(np.float32)
     weight_array = np.asarray(weights, dtype=np.float64)
-    weight_array = weight_array / max(float(weight_array.sum()), 1e-8)
+    if config.mass_normalization_mode == "balanced":
+        weight_array = weight_array / max(float(weight_array.sum()), config.eps)
     return feature_array, np.asarray(instance_ids), weight_array, expected_instance_mass
+
+
+def _expected_memory_mass(prototype: Any, *, total_query_patches: int, config: MatchingConfig) -> float:
+    if config.mass_normalization_mode == "balanced":
+        return 1.0
+    if config.mass_normalization_mode == "area":
+        return float(
+            sum(len(instance.patch_features) for instance in prototype.instances)
+            / max(float(total_query_patches * max(_num_occurring_images(prototype), 1)), 1.0)
+        )
+    raise ValueError(f"unsupported mass_normalization_mode: {config.mass_normalization_mode}")
+
+
+def _query_instance_count(
+    active_mask: np.ndarray,
+    prototype_similarity: np.ndarray,
+    query_positions: np.ndarray,
+    *,
+    config: MatchingConfig,
+) -> int:
+    threshold = (
+        float(config.query_count_similarity_threshold)
+        if config.query_count_similarity_threshold is not None
+        else config.min_assignment_similarity
+    )
+    if threshold is None:
+        threshold = -1.0
+    response_mask = active_mask & (prototype_similarity >= float(threshold))
+    if not np.any(response_mask):
+        return 0
+    response_grid = _patch_mask_to_grid(response_mask, query_positions)
+    return _connected_component_count(
+        response_grid,
+        min_component_patches=max(1, int(config.query_count_min_component_patches)),
+    )
+
+
+def _patch_mask_to_grid(mask: np.ndarray, positions: np.ndarray) -> np.ndarray:
+    xs = np.unique(np.round(positions[:, 0], 6))
+    ys = np.unique(np.round(positions[:, 1], 6))
+    width = max(int(len(xs)), 1)
+    height = max(int(len(ys)), 1)
+    grid = np.zeros((height, width), dtype=bool)
+    x_index = np.rint(np.clip(positions[:, 0], 0.0, 1.0) * max(width - 1, 0)).astype(int)
+    y_index = np.rint(np.clip(positions[:, 1], 0.0, 1.0) * max(height - 1, 0)).astype(int)
+    grid[y_index[mask], x_index[mask]] = True
+    return grid
+
+
+def _connected_component_count(mask: np.ndarray, *, min_component_patches: int) -> int:
+    visited = np.zeros_like(mask, dtype=bool)
+    count = 0
+    height, width = mask.shape
+    for y in range(height):
+        for x in range(width):
+            if visited[y, x] or not mask[y, x]:
+                continue
+            stack = [(y, x)]
+            visited[y, x] = True
+            size = 0
+            while stack:
+                cy, cx = stack.pop()
+                size += 1
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        if dy == 0 and dx == 0:
+                            continue
+                        ny = cy + dy
+                        nx = cx + dx
+                        if ny < 0 or ny >= height or nx < 0 or nx >= width:
+                            continue
+                        if visited[ny, nx] or not mask[ny, nx]:
+                            continue
+                        visited[ny, nx] = True
+                        stack.append((ny, nx))
+            if size >= min_component_patches:
+                count += 1
+    return count
 
 
 def _per_instance_mass_ratio(
