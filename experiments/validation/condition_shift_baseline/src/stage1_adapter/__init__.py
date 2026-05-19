@@ -2,6 +2,22 @@
 
 from stage1_adapter.candidate_masks import CandidateMaskNormalizationConfig, normalize_candidate_masks
 from stage1_adapter.descriptors import CandidateDescriptor, describe_candidate_masks
+from stage1_adapter.memory_bank import (
+    InstanceEntry,
+    MemoryBank,
+    PrototypeMemoryEntry,
+    SpatialGraphEdge,
+    build_memory_bank,
+    memory_bank_summary,
+)
+from stage1_adapter.memory_ot_matcher import (
+    AnomalyDecomposition,
+    MatchingConfig,
+    PrototypeMatchingResult,
+    decomposition_summary,
+    match_query_against_memory,
+    query_patch_grid_from_feature_map,
+)
 from stage1_adapter.patch_graph import (
     PatchGraphConfig,
     PatchGraphProbeResult,
@@ -25,13 +41,25 @@ __all__ = [
     "CandidateDescriptor",
     "CandidateMaskNormalizationConfig",
     "ComponentPrototype",
+    "AnomalyDecomposition",
+    "InstanceEntry",
+    "MatchingConfig",
+    "MemoryBank",
     "PatchGraphConfig",
     "PatchGraphProbeResult",
+    "PrototypeMatchingResult",
+    "PrototypeMemoryEntry",
+    "SpatialGraphEdge",
     "build_reliable_patch_membership",
     "build_component_prototypes",
+    "build_memory_bank",
+    "decomposition_summary",
     "describe_candidate_masks",
+    "match_query_against_memory",
+    "memory_bank_summary",
     "normalize_candidate_masks",
     "patch_region_masks",
+    "query_patch_grid_from_feature_map",
     "run_masked_patch_prototype_probe",
     "score_candidate_against_prototypes",
     "select_reliable_candidate_ids",
