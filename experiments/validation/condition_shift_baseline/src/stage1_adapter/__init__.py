@@ -4,8 +4,11 @@ from stage1_adapter.candidate_masks import CandidateMaskNormalizationConfig, nor
 from stage1_adapter.descriptors import CandidateDescriptor, describe_candidate_masks
 from stage1_adapter.dino_patch_matching import (
     DinoPatchMatchResult,
+    DinoRepresentationShiftResult,
+    analyze_dino_representation_shift,
     match_dino_patch_grid,
     summarize_dino_patch_match,
+    summarize_dino_representation_shift,
 )
 from stage1_adapter.memory_bank import (
     InstanceEntry,
@@ -48,6 +51,7 @@ __all__ = [
     "CandidateMaskNormalizationConfig",
     "ComponentPrototype",
     "DinoPatchMatchResult",
+    "DinoRepresentationShiftResult",
     "AnomalyDecomposition",
     "InstanceEntry",
     "MatchingConfig",
@@ -58,6 +62,7 @@ __all__ = [
     "PrototypeMemoryEntry",
     "SpatialGraphEdge",
     "active_assignment_mask",
+    "analyze_dino_representation_shift",
     "build_reliable_patch_membership",
     "build_component_prototypes",
     "build_memory_bank",
@@ -78,4 +83,5 @@ __all__ = [
     "summarize_teacher_quality",
     "summarize_adapter_scores",
     "summarize_dino_patch_match",
+    "summarize_dino_representation_shift",
 ]
